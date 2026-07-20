@@ -1,0 +1,16 @@
+FastVoice Android SDK
+Copyright 2026 zxkws
+
+This distribution includes sherpa-onnx Java/JNI components and keyword
+spotting model files from the sherpa-onnx project, licensed under the
+Apache License 2.0.
+
+This distribution includes a Silero VAD model from the snakers4/silero-vad
+project, licensed under the MIT License.
+
+This distribution includes ONNX Runtime native binaries from Microsoft,
+licensed under the MIT License.
+
+Runtime dependencies downloaded by Gradle include OkHttp (Apache License
+2.0) and Concentus (BSD 3-Clause License). Their source code is not bundled
+in this repository's SDK AAR.

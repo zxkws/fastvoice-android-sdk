@@ -1,0 +1,120 @@
+name: Android SDK
+
+on:
+  push:
+    branches: [main]
+    tags: ["*.*.*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Verify release tag matches SDK version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(./gradlew -q :fastvoice-sdk:properties | sed -n 's/^version: //p' | head -n 1)"
+          test "$GITHUB_REF_NAME" = "$version"
+
+      - name: Build, test, and publish locally
+        run: |
+          chmod +x ./gradlew
+          ./gradlew \
+            :fastvoice-sdk:testDebugUnitTest \
+            :fastvoice-sdk:lint \
+            :fastvoice-sdk:assembleRelease \
+            :fastvoice-sdk:publishReleasePublicationToMavenLocal \
+            :sample:assembleDebug \
+            --stacktrace
+
+      - name: Compile sample against published Maven coordinate
+        run: ./gradlew :sample:clean :sample:assembleDebug -PusePublishedSdk --stacktrace
+
+      - name: Verify distributable AAR
+        shell: bash
+        run: |
+          set -euo pipefail
+          aar="fastvoice-sdk/build/outputs/aar/fastvoice-sdk-release.aar"
+          test -f "$aar"
+          unzip -l "$aar" | grep -q "libs/sherpa-onnx-1.13.2-classes.jar"
+          unzip -l "$aar" | grep -q "jni/arm64-v8a/libonnxruntime.so"
+          unzip -l "$aar" | grep -q "jni/arm64-v8a/libsherpa-onnx-jni.so"
+          unzip -l "$aar" | grep -q "assets/fastvoice/licenses/Apache-2.0.txt"
+          unzip -l "$aar" | grep -q "assets/fastvoice/licenses/NOTICE.txt"
+          unzip -l "$aar" | grep -q "assets/fastvoice/licenses/Silero-VAD-MIT.txt"
+          unzip -l "$aar" | grep -q "assets/fastvoice/licenses/ONNX-Runtime-MIT.txt"
+          if unzip -l "$aar" | grep -q "jni/armeabi-v7a/"; then
+            exit 1
+          fi
+          version="$(./gradlew -q :fastvoice-sdk:properties | sed -n 's/^version: //p' | head -n 1)"
+          published="$HOME/.m2/repository/com/github/zxkws/fastvoice-android-sdk/$version"
+          test -f "$published/fastvoice-android-sdk-$version.aar"
+          pom="$published/fastvoice-android-sdk-$version.pom"
+          grep -q "com.squareup.okhttp3" "$pom"
+          grep -q "concentus" "$pom"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fastvoice-android-sdk
+          if-no-files-found: error
+          path: |
+            fastvoice-sdk/build/outputs/aar/fastvoice-sdk-release.aar
+            sample/build/outputs/apk/debug/sample-debug.apk
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download verified artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: fastvoice-android-sdk
+          path: verified
+
+      - name: Prepare release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir release
+          cp verified/fastvoice-sdk/build/outputs/aar/fastvoice-sdk-release.aar \
+            release/fastvoice-android-sdk-${GITHUB_REF_NAME}.aar
+          cp verified/sample/build/outputs/apk/debug/sample-debug.apk \
+            release/fastvoice-sample-${GITHUB_REF_NAME}.apk
+          cd release
+          sha256sum * > SHA256SUMS.txt
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "${GITHUB_REF_NAME}"
+          release/*
+          --repo "${GITHUB_REPOSITORY}"
+          --title "FastVoice Android SDK ${GITHUB_REF_NAME}"
+          --generate-notes

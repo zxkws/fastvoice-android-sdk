@@ -1,0 +1,6 @@
+*.aar binary
+*.jar binary
+*.onnx binary
+*.so binary
+gradlew text eol=lf
+gradlew.bat text eol=crlf
