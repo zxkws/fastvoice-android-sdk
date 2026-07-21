@@ -15,7 +15,7 @@ import org.junit.Test
 
 class ProtocolEncoderTest {
     @Test
-    fun helloEncodesAudioWakeAndDeviceWithoutAdvertisingExperimentalControl() {
+    fun helloEncodesAudioWakeDeviceAndSdkOwnedControlProtocol() {
         val logs = mutableListOf<String>()
         val config = FastVoiceConfig(
             endpoint = "wss://voice.example/ws",
@@ -33,13 +33,16 @@ class ProtocolEncoderTest {
         )
 
         assertEquals(
-            "{\"type\":\"hello\",\"audio\":{\"encoding\":\"opus\",\"input_rate\":16000," +
+                "{\"type\":\"hello\",\"audio\":{\"encoding\":\"opus\",\"input_rate\":16000," +
                 "\"output_rate\":48000,\"frame_ms\":20},\"wake\":{\"enabled\":true," +
-                "\"word\":\"你好布丁\",\"words\":[\"你好布丁\",\"布丁\"]}," +
+                "\"word\":\"你好布丁\",\"words\":[\"你好布丁\",\"布丁\"]},\"control\":{" +
+                "\"protocol\":\"commands-v1\",\"actions\":[\"playback.begin\",\"playback.end\"," +
+                "\"playback.stop\",\"playback.pause\",\"playback.resume\",\"playback.replay\"," +
+                "\"playback.skip\",\"audio.volume.adjust\",\"uplink.start\",\"uplink.stop\"]}," +
                 "\"device\":{\"id\":\"rover-1\",\"token\":\"secret-1\"}}",
             encoded,
         )
-        assertFalse(encoded.contains("commands-v1"))
+        assertTrue(encoded.contains("commands-v1"))
         assertTrue(logs.isEmpty())
     }
 
@@ -63,9 +66,12 @@ class ProtocolEncoderTest {
         )
 
         assertEquals(
-            "{\"type\":\"hello\",\"audio\":{\"encoding\":\"opus\",\"input_rate\":16000," +
+                "{\"type\":\"hello\",\"audio\":{\"encoding\":\"opus\",\"input_rate\":16000," +
                 "\"output_rate\":48000,\"frame_ms\":20},\"wake\":{\"enabled\":false," +
-                "\"words\":[]}}",
+                "\"words\":[]},\"control\":{\"protocol\":\"commands-v1\",\"actions\":[" +
+                "\"playback.begin\",\"playback.end\",\"playback.stop\",\"playback.pause\"," +
+                "\"playback.resume\",\"playback.replay\",\"playback.skip\"," +
+                "\"audio.volume.adjust\",\"uplink.start\",\"uplink.stop\"]}}",
             ProtocolEncoder.hello(config, emptyList()),
         )
     }
@@ -81,11 +87,30 @@ class ProtocolEncoderTest {
             ProtocolEncoder.localCommandCandidate("换\"一个\n"),
         )
         assertEquals(
+            "{\"type\":\"command_ack\",\"id\":\"c7\"}",
+            ProtocolEncoder.commandAck("c7"),
+        )
+        assertEquals(
+            "{\"type\":\"playback_finished\",\"gen\":3}",
+            ProtocolEncoder.playbackFinished(3),
+        )
+        assertEquals(
             "{\"type\":\"wake_prompt_done\"}",
             ProtocolEncoder.promptDone("wake_prompt_done"),
         )
         assertThrows(IllegalArgumentException::class.java) {
             ProtocolEncoder.promptDone("made_up_prompt_done")
+        }
+    }
+
+    @Test
+    fun signedTrustedMessageIsForwardedByteForByteWithoutReserialization() {
+        val signed = "  {\n\"type\":\"context_update\",\"auth\":{\"algorithm\":" +
+            "\"hmac-sha256\",\"signature\":\"${"a".repeat(64)}\"}}\n"
+
+        assertTrue(ProtocolEncoder.trustedMessage(signed) === signed)
+        assertThrows(IllegalArgumentException::class.java) {
+            ProtocolEncoder.trustedMessage(" \n\t")
         }
     }
 

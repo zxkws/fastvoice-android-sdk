@@ -52,6 +52,7 @@ internal class AudioEngine(
         const val FRAME_BYTES = FRAME_SAMPLES * 2
         private const val WAKE_PRE_ROLL_FRAMES = 75
         private const val PLAYBACK_PREBUFFER_BYTES = OUTPUT_RATE / 10 * 2 // 100 ms
+        private const val MAX_REPLAY_BYTES = OUTPUT_RATE * 2 * 60 // at most one minute of PCM
         private const val LOCAL_COMMAND_DEBOUNCE_MS = 1_200L
 
         val SUPPORTED_WAKE_WORDS: Set<String> = linkedSetOf(
@@ -76,11 +77,17 @@ internal class AudioEngine(
     private val pendingWakeWord = AtomicReference<String?>(null)
     private val wakeArmed = AtomicBoolean(false)
     private val playbackActive = AtomicBoolean(false)
+    private val playbackPaused = AtomicBoolean(false)
     private val playbackGeneration = AtomicInteger(0)
     private val lastLocalCommandAt = AtomicLong(0)
     private val playbackQueue = LinkedBlockingQueue<PlaybackItem>()
     private val kwsQueue = LinkedBlockingQueue<ByteArray>(100)
     private val decoderLock = Any()
+    private val playbackCacheLock = Any()
+    private val currentPlaybackCache = ArrayList<ByteArray>()
+    private var currentPlaybackBytes = 0
+    private var currentPlaybackTooLarge = false
+    private var lastPlaybackCache: List<ByteArray> = emptyList()
 
     @Volatile
     private var enabledWakeWords: Set<String> = setOf("布丁")
@@ -116,8 +123,15 @@ internal class AudioEngine(
         pendingWakeWord.set(null)
         wakeArmed.set(false)
         playbackActive.set(false)
+        playbackPaused.set(false)
         uplinkEnabled.set(false)
         keywordDetectionPaused.set(false)
+        synchronized(playbackCacheLock) {
+            currentPlaybackCache.clear()
+            currentPlaybackBytes = 0
+            currentPlaybackTooLarge = false
+            lastPlaybackCache = emptyList()
+        }
 
         try {
             encoder = OpusEncoder(INPUT_RATE, 1, OpusApplication.OPUS_APPLICATION_VOIP).apply {
@@ -154,9 +168,16 @@ internal class AudioEngine(
         pendingWakeWord.set(null)
         wakeArmed.set(false)
         playbackActive.set(false)
+        playbackPaused.set(false)
         playbackGeneration.incrementAndGet()
         playbackQueue.clear()
         kwsQueue.clear()
+        synchronized(playbackCacheLock) {
+            currentPlaybackCache.clear()
+            currentPlaybackBytes = 0
+            currentPlaybackTooLarge = false
+            lastPlaybackCache = emptyList()
+        }
 
         recorder?.let { current ->
             runCatching { current.stop() }
@@ -243,26 +264,104 @@ internal class AudioEngine(
                 0
             }
         }
-        if (samples > 0) playbackQueue.offer(PlaybackItem.Audio(pcm.copyOf(samples * 2)))
+        if (samples > 0) {
+            val decoded = pcm.copyOf(samples * 2)
+            synchronized(playbackCacheLock) {
+                if (!currentPlaybackTooLarge) {
+                    if (currentPlaybackBytes + decoded.size <= MAX_REPLAY_BYTES) {
+                        currentPlaybackCache.add(decoded)
+                        currentPlaybackBytes += decoded.size
+                    } else {
+                        currentPlaybackCache.clear()
+                        currentPlaybackBytes = 0
+                        currentPlaybackTooLarge = true
+                    }
+                }
+            }
+            playbackQueue.offer(PlaybackItem.Audio(decoded))
+        }
+    }
+
+    /** Starts a new server playback generation and preserves the last completed replay buffer. */
+    fun beginPlayback() {
+        interruptPlayback()
+        synchronized(playbackCacheLock) {
+            currentPlaybackCache.clear()
+            currentPlaybackBytes = 0
+            currentPlaybackTooLarge = false
+        }
     }
 
     /** Marks that every binary packet for the current response has arrived. */
     fun endPlayback() {
-        if (active.get()) playbackQueue.offer(PlaybackItem.End)
+        if (!active.get()) return
+        synchronized(playbackCacheLock) {
+            if (!currentPlaybackTooLarge && currentPlaybackCache.isNotEmpty()) {
+                lastPlaybackCache = currentPlaybackCache.toList()
+            }
+            currentPlaybackCache.clear()
+            currentPlaybackBytes = 0
+            currentPlaybackTooLarge = false
+        }
+        playbackQueue.offer(PlaybackItem.End)
     }
 
     /** Immediately discards queued audio and invalidates the current AudioTrack. */
     fun interruptPlayback() {
         playbackActive.set(false)
+        playbackPaused.set(false)
         playbackQueue.clear()
         kwsQueue.clear()
         keywordSpotter?.reset()
         playbackGeneration.incrementAndGet()
         synchronized(decoderLock) { decoder?.resetState() }
+        synchronized(playbackCacheLock) {
+            currentPlaybackCache.clear()
+            currentPlaybackBytes = 0
+            currentPlaybackTooLarge = false
+        }
         player?.let { current ->
             runCatching { current.pause() }
             runCatching { current.flush() }
         }
+    }
+
+    /** Pauses the current AudioTrack without discarding decoded or queued audio. */
+    fun pausePlayback(): Boolean {
+        if (!active.get()) return false
+        if (!playbackActive.get() && playbackQueue.isEmpty()) return false
+        playbackPaused.set(true)
+        player?.let { current -> runCatching { current.pause() } }
+        return true
+    }
+
+    /** Continues a paused AudioTrack from its current hardware playback position. */
+    fun resumePlayback(): Boolean {
+        if (!active.get() || !playbackPaused.compareAndSet(true, false)) return false
+        player?.let { current -> runCatching { current.play() } }
+        return true
+    }
+
+    /** Replays the most recently completed server audio without another TTS request. */
+    fun replayPlayback(): Boolean {
+        val replay = synchronized(playbackCacheLock) { lastPlaybackCache.toList() }
+        if (!active.get() || replay.isEmpty()) return false
+        interruptPlayback()
+        replay.forEach { playbackQueue.offer(PlaybackItem.Audio(it)) }
+        playbackQueue.offer(PlaybackItem.End)
+        return true
+    }
+
+    fun skipPlayback() = interruptPlayback()
+
+    /** Adjusts the Android media stream by one platform-defined step. */
+    fun adjustPlaybackVolume(direction: Int): Boolean {
+        if (direction != AudioManager.ADJUST_RAISE && direction != AudioManager.ADJUST_LOWER) {
+            return false
+        }
+        return runCatching {
+            audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, 0)
+        }.isSuccess
     }
 
     private fun isActive(runGeneration: Long): Boolean =
@@ -488,21 +587,31 @@ internal class AudioEngine(
                 if (started) {
                     val expectedFrames = bytesWritten / 2
                     val maximumWait = (bytesWritten * 1_000L / (OUTPUT_RATE * 2L)) + 1_000L
-                    val deadline = SystemClock.elapsedRealtime() + maximumWait
+                    var deadline = SystemClock.elapsedRealtime() + maximumWait
                     while (
                         isActive(runGeneration) &&
                         playbackGeneration.get() == localGeneration &&
-                        SystemClock.elapsedRealtime() < deadline &&
-                        current.playbackHeadPosition.toLong() < expectedFrames
+                        (playbackPaused.get() ||
+                            (SystemClock.elapsedRealtime() < deadline &&
+                                current.playbackHeadPosition.toLong() < expectedFrames))
                     ) {
+                        if (playbackPaused.get()) {
+                            // A user pause is unbounded. Restore the underrun deadline on resume.
+                            deadline = SystemClock.elapsedRealtime() + maximumWait
+                        }
                         Thread.sleep(10)
                     }
                 }
+                val completed = isActive(runGeneration) &&
+                    playbackGeneration.get() == localGeneration
                 replaceTrack()
                 playbackActive.set(false)
+                playbackPaused.set(false)
                 kwsQueue.clear()
                 keywordSpotter?.reset()
-                callback.onPlaybackFinished()
+                // A stop/replay invalidates the old generation while AudioTrack may still be
+                // draining. Never report that stale completion as the newly selected server gen.
+                if (completed) callback.onPlaybackFinished()
             }
 
             try {
@@ -543,7 +652,7 @@ internal class AudioEngine(
                             }
                         }
                         if (playbackGeneration.get() != localGeneration) continue
-                        track?.play()
+                        if (!playbackPaused.get()) track?.play()
                         started = true
                         playbackActive.set(true)
                         callback.onPlaybackStarted()

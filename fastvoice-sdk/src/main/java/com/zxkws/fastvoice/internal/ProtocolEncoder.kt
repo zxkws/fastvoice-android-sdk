@@ -11,12 +11,24 @@ internal object ProtocolEncoder {
     private const val OUTPUT_RATE = 48_000
     private const val FRAME_MS = 20
     private val promptDoneTypes = setOf("wake_prompt_done", "spot_prompt_done")
+    private val controlActions = listOf(
+        "playback.begin",
+        "playback.end",
+        "playback.stop",
+        "playback.pause",
+        "playback.resume",
+        "playback.replay",
+        "playback.skip",
+        "audio.volume.adjust",
+        "uplink.start",
+        "uplink.stop",
+    )
 
     /**
      * Encodes the initial capability negotiation.
      *
-     * `commands-v1` is intentionally not advertised yet: the deployed legacy control path remains
-     * the compatibility baseline while the SDK keeps that protocol choice private.
+     * The host app does not implement the control protocol. The SDK advertises and consumes it so
+     * server-side playback and volume intents can evolve without changing application code.
      */
     @JvmSynthetic
     fun hello(config: FastVoiceConfig, supportedWakeWords: Collection<String>): String {
@@ -39,6 +51,10 @@ internal object ProtocolEncoder {
                 "frame_ms" to FRAME_MS,
             ),
             "wake" to wake,
+            "control" to linkedMapOf(
+                "protocol" to "commands-v1",
+                "actions" to controlActions,
+            ),
         )
         config.deviceId?.let { deviceId ->
             message["device"] = linkedMapOf(
@@ -64,6 +80,29 @@ internal object ProtocolEncoder {
             "text" to text,
         ),
     )
+
+    @JvmSynthetic
+    fun commandAck(id: String): String = JsonEncoder.encode(
+        linkedMapOf(
+            "type" to "command_ack",
+            "id" to id,
+        ),
+    )
+
+    @JvmSynthetic
+    fun playbackFinished(generation: Int): String = JsonEncoder.encode(
+        linkedMapOf(
+            "type" to "playback_finished",
+            "gen" to generation,
+        ),
+    )
+
+    /** Keeps the vehicle platform's signed bytes intact; re-encoding would invalidate its HMAC. */
+    @JvmSynthetic
+    fun trustedMessage(rawJson: String): String {
+        require(rawJson.isNotBlank()) { "trusted message must not be blank" }
+        return rawJson
+    }
 
     @JvmSynthetic
     fun promptDone(type: String): String {

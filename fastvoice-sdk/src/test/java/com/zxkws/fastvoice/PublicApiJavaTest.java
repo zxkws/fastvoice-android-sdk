@@ -8,11 +8,12 @@ import org.junit.Test;
 
 public class PublicApiJavaTest {
     @Test
-    public void buildersAndListenerAdapterAreUsableFromJava() {
+    public void buildersAndListenerAdapterAreUsableFromJava() throws Exception {
         DeviceCredentials credentials = new DeviceCredentials("rover-1", "secret-1");
         FastVoiceConfig config = FastVoiceConfig.builder("ws://127.0.0.1:8100/ws")
             .device(credentials)
             .allowInsecureConnection(true)
+            .localFallbackPromptEnabled(false)
             .preferredWakeWords(Arrays.asList("布丁", "你好布丁"))
             .build();
         VehicleContext context = VehicleContext.builder()
@@ -36,6 +37,10 @@ public class PublicApiJavaTest {
         assertEquals("rover-1", config.getDeviceId());
         assertEquals("park-1", context.getParkId());
         assertEquals("spot-3", arrival.getSpotId());
+        assertEquals(
+            boolean.class,
+            FastVoiceClient.class.getMethod("sendTrustedMessage", String.class).getReturnType()
+        );
         listener.onStateChanged(FastVoiceState.LISTENING);
         listener.onContextUpdated(new FastVoiceEvent.ContextUpdated(1L));
     }

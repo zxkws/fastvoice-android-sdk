@@ -57,6 +57,19 @@ class PublicModelsTest {
     }
 
     @Test
+    fun localFallbackPromptIsEnabledByDefaultAndMayBeDisabled() {
+        assertTrue(
+            FastVoiceConfig("wss://voice.example/ws").localFallbackPromptEnabled,
+        )
+        assertFalse(
+            FastVoiceConfig.builder("wss://voice.example/ws")
+                .localFallbackPromptEnabled(false)
+                .build()
+                .localFallbackPromptEnabled,
+        )
+    }
+
+    @Test
     fun unknownServerStateIsPreservedVerbatim() {
         val value = "future_state:原样"
         assertEquals(value, FastVoiceState.fromRaw(value).value)

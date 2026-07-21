@@ -74,6 +74,7 @@ class FastVoiceConfig @JvmOverloads constructor(
     val logger: FastVoiceLogger? = null,
     val contextTtlSeconds: Double = DEFAULT_TTL_SECONDS,
     val arrivalTtlSeconds: Double = DEFAULT_TTL_SECONDS,
+    val localFallbackPromptEnabled: Boolean = true,
 ) {
     val preferredWakeWords: List<String> =
         Collections.unmodifiableList(ArrayList(preferredWakeWords))
@@ -112,6 +113,7 @@ class FastVoiceConfig @JvmOverloads constructor(
         logger: FastVoiceLogger? = null,
         contextTtlSeconds: Double = DEFAULT_TTL_SECONDS,
         arrivalTtlSeconds: Double = DEFAULT_TTL_SECONDS,
+        localFallbackPromptEnabled: Boolean = true,
     ) : this(
         endpoint = endpoint,
         deviceId = credentials.deviceId,
@@ -125,6 +127,7 @@ class FastVoiceConfig @JvmOverloads constructor(
         logger = logger,
         contextTtlSeconds = contextTtlSeconds,
         arrivalTtlSeconds = arrivalTtlSeconds,
+        localFallbackPromptEnabled = localFallbackPromptEnabled,
     )
 
     internal fun requireDeviceToken(): String {
@@ -158,6 +161,8 @@ class FastVoiceConfig @JvmOverloads constructor(
         append(contextTtlSeconds)
         append(", arrivalTtlSeconds=")
         append(arrivalTtlSeconds)
+        append(", localFallbackPromptEnabled=")
+        append(localFallbackPromptEnabled)
         append(')')
     }
 
@@ -173,6 +178,7 @@ class FastVoiceConfig @JvmOverloads constructor(
         private var logger: FastVoiceLogger? = null
         private var contextTtlSeconds: Double = DEFAULT_TTL_SECONDS
         private var arrivalTtlSeconds: Double = DEFAULT_TTL_SECONDS
+        private var localFallbackPromptEnabled: Boolean = true
 
         fun device(
             deviceId: String,
@@ -207,6 +213,10 @@ class FastVoiceConfig @JvmOverloads constructor(
 
         fun arrivalTtlSeconds(seconds: Double) = apply { arrivalTtlSeconds = seconds }
 
+        fun localFallbackPromptEnabled(enabled: Boolean) = apply {
+            localFallbackPromptEnabled = enabled
+        }
+
         fun build(): FastVoiceConfig = FastVoiceConfig(
             endpoint = endpoint,
             deviceId = deviceId,
@@ -220,6 +230,7 @@ class FastVoiceConfig @JvmOverloads constructor(
             logger = logger,
             contextTtlSeconds = contextTtlSeconds,
             arrivalTtlSeconds = arrivalTtlSeconds,
+            localFallbackPromptEnabled = localFallbackPromptEnabled,
         )
     }
 

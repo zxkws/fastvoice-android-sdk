@@ -19,8 +19,6 @@ import com.zxkws.fastvoice.FastVoiceError
 import com.zxkws.fastvoice.FastVoiceEvent
 import com.zxkws.fastvoice.FastVoiceListenerAdapter
 import com.zxkws.fastvoice.FastVoiceState
-import com.zxkws.fastvoice.SpotArrival
-import com.zxkws.fastvoice.VehicleContext
 
 /**
  * SDK 的最小接入示例页面。
@@ -36,17 +34,12 @@ class MainActivity : Activity() {
     private lateinit var endpointInput: EditText
     private lateinit var deviceIdInput: EditText
     private lateinit var tokenInput: EditText
-    private lateinit var parkIdInput: EditText
-    private lateinit var routeIdInput: EditText
-    private lateinit var locationInput: EditText
-    private lateinit var stationInput: EditText
-    private lateinit var spotInput: EditText
+    private lateinit var trustedMessageInput: EditText
 
     private lateinit var startButton: Button
     private lateinit var stopButton: Button
     private lateinit var interruptButton: Button
-    private lateinit var contextButton: Button
-    private lateinit var arrivalButton: Button
+    private lateinit var trustedMessageButton: Button
 
     private lateinit var stateValue: TextView
     private lateinit var asrValue: TextView
@@ -103,8 +96,7 @@ class MainActivity : Activity() {
         startButton.setOnClickListener { startVoice() }
         stopButton.setOnClickListener { voiceClient?.stop() }
         interruptButton.setOnClickListener { voiceClient?.interrupt() }
-        contextButton.setOnClickListener { updateContext() }
-        arrivalButton.setOnClickListener { reportArrival() }
+        trustedMessageButton.setOnClickListener { sendTrustedMessage() }
     }
 
     private fun startVoice() {
@@ -142,31 +134,8 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun updateContext() {
-        voiceClient?.updateContext(
-            VehicleContext(
-                parkId = parkIdInput.rawOrNull(),
-                routeId = routeIdInput.rawOrNull(),
-                currentSpotId = spotInput.rawOrNull(),
-                currentStationId = stationInput.rawOrNull(),
-                currentLocation = locationInput.rawOrNull(),
-            ),
-        )
-    }
-
-    private fun reportArrival() {
-        val parkId = parkIdInput.requiredRaw("park_id") ?: return
-        val routeId = routeIdInput.requiredRaw("route_id") ?: return
-        val stationId = stationInput.requiredRaw("station_id") ?: return
-        val spotId = spotInput.requiredRaw("spot_id") ?: return
-        voiceClient?.reportArrival(
-            SpotArrival(
-                parkId = parkId,
-                routeId = routeId,
-                stationId = stationId,
-                spotId = spotId,
-            ),
-        )
+    private fun sendTrustedMessage() {
+        voiceClient?.sendTrustedMessage(trustedMessageInput.text.toString())
     }
 
     private fun requestMicrophonePermissionIfNeeded() {
@@ -229,17 +198,17 @@ class MainActivity : Activity() {
         tokenInput = input("device token (test only)").apply {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
         }
-        parkIdInput = input("park_id")
-        routeIdInput = input("route_id")
-        locationInput = input("current_location")
-        stationInput = input("station_id")
-        spotInput = input("spot_id")
+        trustedMessageInput = input("vehicle-platform-signed JSON").apply {
+            isSingleLine = false
+            minLines = 3
+            gravity = Gravity.TOP
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+        }
 
         startButton = button("Start")
         stopButton = button("Stop")
         interruptButton = button("Interrupt")
-        contextButton = button("Update context")
-        arrivalButton = button("Report arrival")
+        trustedMessageButton = button("Send signed message")
 
         stateValue = output()
         asrValue = output()
@@ -260,13 +229,9 @@ class MainActivity : Activity() {
             addView(label("Token"))
             addView(tokenInput)
             addView(buttonRow(startButton, stopButton, interruptButton))
-            addView(label("Context / arrival test values"))
-            addView(parkIdInput)
-            addView(routeIdInput)
-            addView(locationInput)
-            addView(stationInput)
-            addView(spotInput)
-            addView(buttonRow(contextButton, arrivalButton))
+            addView(label("Signed context / arrival JSON (test only)"))
+            addView(trustedMessageInput)
+            addView(trustedMessageButton)
             addView(rawOutput("state", stateValue, gap))
             addView(rawOutput("asr", asrValue, gap))
             addView(rawOutput("reply", replyValue, gap))
@@ -326,12 +291,4 @@ class MainActivity : Activity() {
             ).apply { setMargins(0, topMargin, 0, 0) }
         }
 
-    private fun EditText.rawOrNull(): String? =
-        text.toString().takeIf { it.isNotEmpty() }
-
-    private fun EditText.requiredRaw(field: String): String? =
-        rawOrNull() ?: run {
-            renderError("$field is required")
-            null
-        }
 }
