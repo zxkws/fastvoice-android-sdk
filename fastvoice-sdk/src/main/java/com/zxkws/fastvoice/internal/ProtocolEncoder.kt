@@ -74,12 +74,20 @@ internal object ProtocolEncoder {
     )
 
     @JvmSynthetic
-    fun localCommandCandidate(text: String): String = JsonEncoder.encode(
-        linkedMapOf(
-            "type" to "local_command_candidate",
-            "text" to text,
-        ),
-    )
+    fun localCommandCandidate(id: String, text: String, generation: Int): String {
+        require(id.isNotEmpty()) { "local command candidate id must not be empty" }
+        return JsonEncoder.encode(
+            linkedMapOf(
+                "type" to "local_command_candidate",
+                "id" to id,
+                "text" to text,
+                "gen" to generation,
+            ),
+        )
+    }
+
+    @JvmSynthetic
+    fun interrupt(): String = JsonEncoder.encode(linkedMapOf("type" to "interrupt"))
 
     @JvmSynthetic
     fun commandAck(id: String): String = JsonEncoder.encode(
@@ -96,6 +104,32 @@ internal object ProtocolEncoder {
             "gen" to generation,
         ),
     )
+
+    @JvmSynthetic
+    fun playbackProgress(generation: Int, playedMs: Long): String {
+        require(playedMs >= 0L) { "playedMs must be non-negative" }
+        return JsonEncoder.encode(
+            linkedMapOf(
+                "type" to "playback_progress",
+                "gen" to generation,
+                "played_ms" to playedMs,
+            ),
+        )
+    }
+
+    @JvmSynthetic
+    fun playbackFailed(generation: Int, reason: String, commandId: String? = null): String {
+        require(reason.isNotEmpty()) { "playback failure reason must not be empty" }
+        return JsonEncoder.encode(
+            linkedMapOf<String, Any?>(
+                "type" to "playback_failed",
+                "gen" to generation,
+                "reason" to reason,
+            ).apply {
+                commandId?.takeIf(String::isNotEmpty)?.let { put("command_id", it) }
+            },
+        )
+    }
 
     /** Keeps the vehicle platform's signed bytes intact; re-encoding would invalidate its HMAC. */
     @JvmSynthetic

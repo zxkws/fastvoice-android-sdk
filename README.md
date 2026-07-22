@@ -111,6 +111,8 @@ client.stop()
 client.close()
 ```
 
+`interrupt()` 会先停止本地当前播放，再通过同一 WebSocket 发送显式取消消息，让服务端终止该连接的当前生成；它不再冒充一个本地语音控制词候选。
+
 `start()` 和 `sendTrustedMessage()` 返回 `Boolean`，只表示当前 SDK/WebSocket 是否接受了请求；验签、版本、TTL 和业务结果仍以回调为准。连接尚未完成初始协商时不会暗中排队或重放已签名消息，调用方应根据 `false` 决定是否由车辆平台重新生成。`DeviceTokenProvider` 是同步接口，应从安全缓存立即返回当前短期 token；如果取 token 需要网络请求，应在启动 SDK 前完成获取。
 
 ## 凭证与网络安全
@@ -155,6 +157,13 @@ val config = FastVoiceConfig.builder(endpoint)
 
 SDK 内置离线唤醒模型。服务端返回本设备启用的唤醒词集合，SDK 仅启用“本地模型支持集合”和“服务端配置集合”的交集。增加模型从未训练或预置的新唤醒词仍需要重新发布 SDK；仅切换已预置词无需业务 App 改代码。
 
+## 生产音频边界
+
+- 录音源固定为 `MIC`；不会因短时安静自动切到或依赖 `VOICE_COMMUNICATION`。
+- SDK 会在每次 `AudioRecord.startRecording()` 前尝试创建并启用平台 `AcousticEchoCanceler`，重建录音器时也会重新绑定。部分设备没有可用的软件 AEC，此时 SDK 会报告降级错误但仍保留 raw MIC 上行；正式硬件应优先提供可靠的硬件回采/AEC，并继续使用服务端同代 TTS 回声过滤作为第二道保护。
+- 播放采用 `USAGE_VOICE_COMMUNICATION`。AudioTrack 初始化、写入、恢复或排空失败会报告 `playback_failed`，不会发送成功完成或 ACK。
+- 本地 KWS 只把控制词当作候选：先可逆暂停同一播放代，再由服务端云 ASR 和回声边界返回接受/拒绝；拒绝和超时会恢复同代缓冲。
+
 ## 示例工程
 
 ```bash
@@ -169,6 +178,8 @@ adb reverse tcp:8100 tcp:8100
 ```
 
 然后在示例页使用 `ws://127.0.0.1:8100/ws`。生产联调应使用真实 `wss://` 地址和后端签发的测试设备凭证。
+
+`/Users/q/AndroidStudioProjects/voicekit-android/fastvoice-sdk-demo` 另提供外部消费验证：它在构建时现场生成本仓库的 release AAR，再由一个 Java App 直接消费该 AAR，不包含重复的音频或协议实现。
 
 ## SDK 职责
 

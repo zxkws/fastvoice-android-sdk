@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- 生产录音固定使用 `MIC`，每次创建/重建 `AudioRecord` 都在开始采集前绑定并启用平台 AEC；上行和 KWS 均消费未经端侧门控改写的原始 MIC PCM。
+- 麦克风连续读取失败会有界重建，耗尽重试后明确报错并关闭上行，不再永久空转。
+- AudioTrack 的短写、零写、负写、暂停/恢复和播放头排空均有明确成功/失败终态；失败不会再伪装成 `playback_finished` 或成功 ACK。
+- 播放进度、完成、失败、命令和二进制音频均绑定服务端 generation 与本地 session/epoch，旧连接和旧播放回调不能污染新会话。
+- 本地控制词改为 `id/gen` 两阶段裁决和可逆预暂停；拒绝、超时或服务端正式动作会恢复/接管同一代播放。
+- 同一控制词的多条发音词典行全部保留，不再按标签覆盖。
+- `commands-v1` 的 `state` 仅用于展示，并支持 `turn_error_terminal`、显式宿主 `interrupt` 和 generation-bound `playback_failed`。
+
 ## 0.2.0 — 2026-07-20
 
 - SDK 内部启用 `commands-v1`，宿主 App 无需理解服务端控制协议。

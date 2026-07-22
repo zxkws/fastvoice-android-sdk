@@ -83,9 +83,11 @@ class ProtocolEncoderTest {
             ProtocolEncoder.wake("布丁"),
         )
         assertEquals(
-            "{\"type\":\"local_command_candidate\",\"text\":\"换\\\"一个\\n\"}",
-            ProtocolEncoder.localCommandCandidate("换\"一个\n"),
+            "{\"type\":\"local_command_candidate\",\"id\":\"lc-7\"," +
+                "\"text\":\"换\\\"一个\\n\",\"gen\":3}",
+            ProtocolEncoder.localCommandCandidate("lc-7", "换\"一个\n", 3),
         )
+        assertEquals("{\"type\":\"interrupt\"}", ProtocolEncoder.interrupt())
         assertEquals(
             "{\"type\":\"command_ack\",\"id\":\"c7\"}",
             ProtocolEncoder.commandAck("c7"),
@@ -93,6 +95,19 @@ class ProtocolEncoderTest {
         assertEquals(
             "{\"type\":\"playback_finished\",\"gen\":3}",
             ProtocolEncoder.playbackFinished(3),
+        )
+        assertEquals(
+            "{\"type\":\"playback_progress\",\"gen\":3,\"played_ms\":1250}",
+            ProtocolEncoder.playbackProgress(3, 1_250),
+        )
+        assertEquals(
+            "{\"type\":\"playback_failed\",\"gen\":3,\"reason\":\"write=0\"}",
+            ProtocolEncoder.playbackFailed(3, "write=0"),
+        )
+        assertEquals(
+            "{\"type\":\"playback_failed\",\"gen\":3,\"reason\":\"write=-6\"," +
+                "\"command_id\":\"c7\"}",
+            ProtocolEncoder.playbackFailed(3, "write=-6", "c7"),
         )
         assertEquals(
             "{\"type\":\"wake_prompt_done\"}",

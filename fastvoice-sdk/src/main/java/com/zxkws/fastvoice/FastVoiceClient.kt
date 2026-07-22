@@ -9,10 +9,17 @@ import android.os.Handler
 import android.os.Looper
 import com.zxkws.fastvoice.internal.AndroidTextToSpeechPromptPlayer
 import com.zxkws.fastvoice.internal.AudioEngine
+import com.zxkws.fastvoice.internal.ClientSessionEpoch
 import com.zxkws.fastvoice.internal.FallbackPromptGate
 import com.zxkws.fastvoice.internal.FallbackPromptPlayer
+import com.zxkws.fastvoice.internal.LocalCommandPrePauseState
+import com.zxkws.fastvoice.internal.LocalCommandTimeoutPolicy
 import com.zxkws.fastvoice.internal.MonotonicVersionStore
+import com.zxkws.fastvoice.internal.PlaybackCommandGenerationPolicy
+import com.zxkws.fastvoice.internal.PlaybackTerminalState
 import com.zxkws.fastvoice.internal.ProtocolEncoder
+import com.zxkws.fastvoice.internal.ServerStateSideEffectPolicy
+import com.zxkws.fastvoice.internal.TurnErrorUplinkState
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -69,13 +76,26 @@ class FastVoiceClient @JvmOverloads constructor(
     private val started = AtomicBoolean(false)
     private val closed = AtomicBoolean(false)
     private val helloReady = AtomicBoolean(false)
-    private val connectionGeneration = AtomicLong(0)
+    private val sessions = ClientSessionEpoch()
     private val reconnectAttempt = AtomicInteger(0)
     private val socket = AtomicReference<WebSocket?>(null)
     private val wakeWords = AtomicReference<List<String>>(emptyList())
     private val commandProtocolEnabled = AtomicBoolean(false)
+    private val legacyPlaybackOpen = AtomicBoolean(false)
     private val playbackGeneration = AtomicInteger(-1)
+    private val playbackEpoch = AtomicLong(0)
     private val pendingPlaybackAck = AtomicReference<PendingPlaybackAck?>(null)
+    private val playbackControlLock = Any()
+    private val playbackTerminalState = PlaybackTerminalState()
+    private val serverPlaybackPaused = AtomicBoolean(false)
+    private val localCommandPrePauseState = LocalCommandPrePauseState()
+    private val localCommandSequence = AtomicLong(0)
+    private var localCommandDecisionFuture: ScheduledFuture<*>? = null
+    @Volatile
+    private var localCommandDecisionTimeoutMs =
+        LocalCommandTimeoutPolicy.clientTimeoutMs(
+            LocalCommandTimeoutPolicy.DEFAULT_SERVER_TIMEOUT_MS,
+        )
     private val resumeUplinkAfterPlayback = AtomicBoolean(false)
     private val promptDoneType = AtomicReference<String?>(null)
     private val pendingArrival = AtomicReference<PendingArrival?>(null)
@@ -84,6 +104,7 @@ class FastVoiceClient @JvmOverloads constructor(
     private val lastContext = AtomicReference<VehicleContext?>(null)
     private val latestServerState = AtomicReference(FastVoiceState.SLEEPING.value)
     private val fallbackPromptGate = FallbackPromptGate()
+    private val turnErrorUplinkState = TurnErrorUplinkState()
     private val localFallbackActive = AtomicBoolean(false)
     private val localFallbackGeneration = AtomicLong(0)
 
@@ -130,9 +151,8 @@ class FastVoiceClient @JvmOverloads constructor(
                 return sent
             }
 
-            override fun onLocalCommandCandidate(text: String) {
-                socket.get()?.takeIf { helloReady.get() }
-                    ?.send(ProtocolEncoder.localCommandCandidate(text))
+            override fun onLocalCommandCandidate(generation: Int, text: String) {
+                handleLocalCommandCandidate(generation, text)
             }
 
             override fun onUplinkPacket(packet: ByteArray) {
@@ -141,25 +161,20 @@ class FastVoiceClient @JvmOverloads constructor(
 
             override fun onPlaybackStarted() = Unit
 
-            override fun onPlaybackFinished() {
-                val current = socket.get()?.takeIf { helloReady.get() }
-                val generation = playbackGeneration.get()
-                if (commandProtocolEnabled.get()) {
-                    if (generation >= 0) current?.send(ProtocolEncoder.playbackFinished(generation))
-                    pendingPlaybackAck.getAndSet(null)?.takeIf {
-                        it.generation == generation
-                    }?.let { current?.send(ProtocolEncoder.commandAck(it.commandId)) }
-                } else {
-                    promptDoneType.getAndSet(null)?.let { type ->
-                        current?.send(ProtocolEncoder.promptDone(type))
-                    }
-                }
-                audio.setPromptPlayback(false)
-                if (!commandProtocolEnabled.get() &&
-                    resumeUplinkAfterPlayback.compareAndSet(true, false) && helloReady.get()
-                ) {
-                    audio.setUplinkEnabled(true)
-                }
+            override fun onPlaybackProgress(generation: Int, playedMs: Long) {
+                if (!commandProtocolEnabled.get() || generation != playbackGeneration.get()) return
+                val epoch = playbackEpoch.get()
+                if (playbackTerminalState.failureReason(generation, epoch) != null) return
+                socket.get()?.takeIf { helloReady.get() }
+                    ?.send(ProtocolEncoder.playbackProgress(generation, playedMs))
+            }
+
+            override fun onPlaybackFinished(generation: Int) {
+                handlePlaybackFinished(generation)
+            }
+
+            override fun onPlaybackFailed(generation: Int, reason: String) {
+                handlePlaybackFailed(generation, reason)
             }
 
             override fun onDiagnostic(code: String, message: String, error: Throwable?) {
@@ -220,16 +235,16 @@ class FastVoiceClient @JvmOverloads constructor(
             return false
         }
         audio.setWakeWords(selectedLocalWakeWords())
-        connect(connectionGeneration.incrementAndGet())
+        connect(sessions.begin())
         return true
     }
 
     /** Stops audio and reconnect work. The same instance may be started again. */
     fun stop() {
         if (!started.compareAndSet(true, false)) return
-        connectionGeneration.incrementAndGet()
+        sessions.invalidate()
         helloReady.set(false)
-        fallbackPromptGate.clear()
+        fallbackPromptGate.resetSession()
         cancelLocalFallback(restoreServerState = false)
         audio.setWakeArmed(false)
         reconnectFuture?.cancel(false)
@@ -244,12 +259,13 @@ class FastVoiceClient @JvmOverloads constructor(
     /** Immediately stops local playback and asks the server to cancel the active response. */
     fun interrupt() {
         fallbackPromptGate.clear()
-        cancelLocalFallback(restoreServerState = true)
-        audio.interruptPlayback()
+        cancelLocalFallback(restoreServerState = false)
+        legacyPlaybackOpen.set(false)
+        invalidateCurrentPlaybackState()
         promptDoneType.set(null)
         resumeUplinkAfterPlayback.set(false)
         socket.get()?.takeIf { helloReady.get() }
-            ?.send(ProtocolEncoder.localCommandCandidate("停止"))
+            ?.send(ProtocolEncoder.interrupt())
     }
 
     /**
@@ -371,7 +387,7 @@ class FastVoiceClient @JvmOverloads constructor(
     }
 
     private fun connect(generation: Long) {
-        if (!started.get() || closed.get() || generation != connectionGeneration.get()) return
+        if (!started.get() || closed.get() || !sessions.isCurrent(generation)) return
         val request = runCatching { Request.Builder().url(config.endpoint).build() }
             .getOrElse {
                 emitError(code = "invalid_endpoint", message = it.message, cause = it)
@@ -381,7 +397,14 @@ class FastVoiceClient @JvmOverloads constructor(
             }
         log(FastVoiceLogLevel.INFO, "opening WebSocket")
         val webSocket = httpClient.newWebSocket(request, SocketListener(generation))
-        socket.getAndSet(webSocket)?.cancel()
+        var published = false
+        sessions.runIfCurrent(generation) {
+            if (started.get() && !closed.get()) {
+                socket.getAndSet(webSocket)?.cancel()
+                published = true
+            }
+        }
+        if (!published) webSocket.cancel()
     }
 
     private inner class SocketListener(
@@ -390,7 +413,11 @@ class FastVoiceClient @JvmOverloads constructor(
         private val terminated = AtomicBoolean(false)
 
         override fun onOpen(webSocket: WebSocket, response: Response) {
-            if (!isCurrent(generation, webSocket)) {
+            var current = false
+            sessions.runIfCurrent(generation) {
+                current = started.get() && socket.get() === webSocket
+            }
+            if (!current) {
                 webSocket.close(1_000, "stale connection")
                 return
             }
@@ -405,19 +432,37 @@ class FastVoiceClient @JvmOverloads constructor(
                 webSocket.close(1_008, "credentials unavailable")
                 return
             }
-            webSocket.send(hello)
+            sessions.runIfCurrent(generation) {
+                if (started.get() && socket.get() === webSocket) webSocket.send(hello)
+            }
         }
 
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-            if (isCurrent(generation, webSocket)) {
-                observeServerAudio()
-                audio.enqueueOpus(bytes.toByteArray())
+            val packet = bytes.toByteArray()
+            sessions.runIfCurrent(generation) {
+                if (started.get() && socket.get() === webSocket) {
+                    ensureLegacyPlaybackStarted()
+                    observeServerAudio()
+                    audio.enqueueOpus(packet)
+                }
             }
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
-            if (!isCurrent(generation, webSocket)) return
-            handleServerText(text)
+            val parsed = runCatching { JSONObject(text) }
+            sessions.runIfCurrent(generation) {
+                if (!started.get() || socket.get() !== webSocket) return@runIfCurrent
+                parsed.fold(
+                    onSuccess = ::handleServerMessage,
+                    onFailure = { error ->
+                        emitError(
+                            code = "invalid_server_message",
+                            message = error.message,
+                            cause = error,
+                        )
+                    },
+                )
+            }
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
@@ -444,25 +489,33 @@ class FastVoiceClient @JvmOverloads constructor(
         }
     }
 
-    private fun handleServerText(text: String) {
-        val message = runCatching { JSONObject(text) }.getOrElse { error ->
-            emitError(code = "invalid_server_message", message = error.message, cause = error)
-            return
-        }
+    private fun handleServerMessage(message: JSONObject) {
         when (message.optString("type")) {
             "hello" -> handleHello(message)
             "state" -> handleState(message.optString("value"))
             "wake_ack" -> handleWakeAcknowledgement(message)
             "spot_arrival_prompt" -> handleServerPrompt(message, "spot_prompt_done")
-            "asr" -> emit(FastVoiceEvent.Asr(message.optString("text")))
+            "asr" -> {
+                clearTurnErrorFallback()
+                emit(FastVoiceEvent.Asr(message.optString("text")))
+            }
             "reply_delta" -> emit(FastVoiceEvent.ReplyDelta(message.optString("text")))
             "command" -> handleCommand(message)
             "turn_error" -> {
-                cancelLocalFallback(restoreServerState = false)
-                audio.setUplinkEnabled(false)
-                resumeUplinkAfterPlayback.set(true)
-                if (config.localFallbackPromptEnabled) {
-                    fallbackPromptGate.onTurnError(message.nullableString("prompt"))
+                val transition = if (config.localFallbackPromptEnabled) {
+                    fallbackPromptGate.onTurnError(
+                        message.nullableString("recovery_id"),
+                        message.nullableString("prompt"),
+                    )
+                } else {
+                    fallbackPromptGate.clear()
+                }
+                if (transition.action == FallbackPromptGate.Action.STOP_LOCAL) {
+                    cancelLocalFallback(restoreServerState = false)
+                }
+                if (!commandProtocolEnabled.get()) {
+                    audio.setUplinkEnabled(false)
+                    resumeUplinkAfterPlayback.set(true)
                 }
                 emitError(
                     code = message.nullableString("code"),
@@ -470,14 +523,19 @@ class FastVoiceClient @JvmOverloads constructor(
                     prompt = message.nullableString("prompt"),
                 )
             }
-            "audio_end" -> if (!commandProtocolEnabled.get()) audio.endPlayback()
+            "turn_error_terminal" -> handleTurnErrorTerminal(message)
+            "local_command_decision" -> handleLocalCommandDecision(message)
+            "audio_end" -> if (!commandProtocolEnabled.get() && legacyPlaybackOpen.get()) {
+                audio.endPlayback()
+            }
             "interrupt" -> {
                 fallbackPromptGate.clear()
                 cancelLocalFallback(restoreServerState = false)
-                audio.interruptPlayback()
                 promptDoneType.set(null)
                 resumeUplinkAfterPlayback.set(false)
                 audio.setPromptPlayback(false)
+                legacyPlaybackOpen.set(false)
+                invalidateCurrentPlaybackState()
             }
             "context_updated" -> handleContextUpdated(message)
             "context_error" -> handleContextError(message)
@@ -491,6 +549,12 @@ class FastVoiceClient @JvmOverloads constructor(
         commandProtocolEnabled.set(
             control?.optBoolean("enabled") == true &&
                 control.optString("protocol") == "commands-v1",
+        )
+        localCommandDecisionTimeoutMs = LocalCommandTimeoutPolicy.clientTimeoutMs(
+            message.optJSONObject("local_command")?.optLong(
+                "confirm_timeout_ms",
+                LocalCommandTimeoutPolicy.DEFAULT_SERVER_TIMEOUT_MS,
+            ) ?: LocalCommandTimeoutPolicy.DEFAULT_SERVER_TIMEOUT_MS,
         )
         val negotiated = linkedSetOf<String>()
         val wake = message.optJSONObject("wake")
@@ -528,29 +592,36 @@ class FastVoiceClient @JvmOverloads constructor(
 
     private fun handleState(rawValue: String) {
         latestServerState.set(rawValue)
-        if (rawValue == FastVoiceState.SPEAKING.value) observeServerAudio()
-        val localFallback = fallbackPromptGate.takeAfterTerminalState(rawValue)
-        if (rawValue == FastVoiceState.SLEEPING.value) {
+        if (rawValue == FastVoiceState.RECOGNIZING.value) clearTurnErrorFallback()
+        val commandProtocol = commandProtocolEnabled.get()
+        if (ServerStateSideEffectPolicy.appliesLegacySleepingSideEffects(
+                commandProtocol,
+                rawValue,
+            )
+        ) {
             promptDoneType.set(null)
             resumeUplinkAfterPlayback.set(false)
-            if (localFallback == null && !localFallbackActive.get()) {
+            if (!localFallbackActive.get()) {
                 audio.setPromptPlayback(false)
                 audio.setUplinkEnabled(false)
                 audio.setWakeArmed(
                     config.wakeEnabled && helloReady.get() && wakeWords.get().isNotEmpty(),
                 )
             }
-        } else if (!config.wakeEnabled && rawValue == FastVoiceState.LISTENING.value &&
-            localFallback == null && !localFallbackActive.get()
+        } else if (!config.wakeEnabled &&
+            ServerStateSideEffectPolicy.appliesLegacyListeningSideEffects(
+                commandProtocol,
+                rawValue,
+            ) && !localFallbackActive.get()
         ) {
             audio.setWakeArmed(false)
             audio.setUplinkEnabled(true)
         }
-        localFallback?.let(::startLocalFallback)
         emit(FastVoiceEvent.StateChanged(FastVoiceState.fromRaw(rawValue)))
     }
 
     private fun handleWakeAcknowledgement(message: JSONObject) {
+        clearTurnErrorFallback()
         if (!message.optBoolean("awaiting_command")) return
         if (message.optString("audio") == "server") {
             handleServerPrompt(message, "wake_prompt_done")
@@ -564,12 +635,14 @@ class FastVoiceClient @JvmOverloads constructor(
 
     private fun handleServerPrompt(message: JSONObject, doneType: String) {
         if (message.optString("audio") != "server") return
+        if (doneType == "spot_prompt_done") clearTurnErrorFallback()
         if (commandProtocolEnabled.get()) {
             promptDoneType.set(null)
             resumeUplinkAfterPlayback.set(false)
         } else {
             promptDoneType.set(doneType)
             resumeUplinkAfterPlayback.set(true)
+            ensureLegacyPlaybackStarted()
         }
         audio.setWakeArmed(false)
         audio.setPromptPlayback(true)
@@ -585,56 +658,163 @@ class FastVoiceClient @JvmOverloads constructor(
         var ackAfterPlayback = false
 
         when (action) {
-            "uplink.start" -> if (!localFallbackActive.get()) audio.setUplinkEnabled(true)
-            "uplink.stop" -> audio.setUplinkEnabled(false)
-            "playback.begin" -> {
-                observeServerAudio()
-                playbackGeneration.set(generation)
-                pendingPlaybackAck.set(null)
-                audio.beginPlayback()
+            "uplink.start" -> {
+                audio.setWakeArmed(false)
+                audio.setUplinkEnabled(
+                    turnErrorUplinkState.onServerCommand(
+                        enabled = true,
+                        localPromptPlaying = localFallbackActive.get(),
+                    ),
+                )
             }
-            "playback.end" -> {
-                if (generation != playbackGeneration.get()) {
-                    applied = false
-                } else {
-                    ackAfterPlayback = message.optBoolean("ack")
-                    if (ackAfterPlayback && commandId.isNotBlank()) {
-                        pendingPlaybackAck.set(PendingPlaybackAck(commandId, generation))
+            "uplink.stop" -> {
+                audio.setUplinkEnabled(
+                    turnErrorUplinkState.onServerCommand(
+                        enabled = false,
+                        localPromptPlaying = localFallbackActive.get(),
+                    ),
+                )
+                audio.setWakeArmed(
+                    config.wakeEnabled && helloReady.get() && wakeWords.get().isNotEmpty(),
+                )
+            }
+            "playback.begin" -> {
+                synchronized(playbackControlLock) {
+                    if (!PlaybackCommandGenerationPolicy.acceptsReset(
+                            generation,
+                            playbackGeneration.get(),
+                        )
+                    ) {
+                        applied = false
+                    } else {
+                        clearAnyLocalCommandPrePauseLocked()
+                        playbackGeneration.set(generation)
+                        val epoch = playbackEpoch.incrementAndGet()
+                        playbackTerminalState.begin(generation, epoch)
+                        pendingPlaybackAck.set(null)
+                        serverPlaybackPaused.set(false)
+                        audio.beginPlayback(generation)
                     }
-                    audio.endPlayback()
                 }
             }
-            "playback.stop" -> {
-                playbackGeneration.set(generation)
-                pendingPlaybackAck.set(null)
-                promptDoneType.set(null)
-                resumeUplinkAfterPlayback.set(false)
-                audio.setPromptPlayback(false)
-                audio.interruptPlayback()
+            "playback.end" -> {
+                var resumePrePause = false
+                var failureReason: String? = null
+                synchronized(playbackControlLock) {
+                    if (!PlaybackCommandGenerationPolicy.acceptsEnd(
+                            generation,
+                            playbackGeneration.get(),
+                        )
+                    ) {
+                        applied = false
+                    } else {
+                        val epoch = playbackEpoch.get()
+                        resumePrePause = clearLocalCommandPrePauseLocked(resume = true)
+                        failureReason = playbackTerminalState.failureReason(generation, epoch)
+                        ackAfterPlayback = message.optBoolean("ack")
+                        if (failureReason == null && ackAfterPlayback && commandId.isNotBlank()) {
+                            pendingPlaybackAck.set(PendingPlaybackAck(commandId, generation))
+                        } else {
+                            pendingPlaybackAck.set(null)
+                        }
+                    }
+                }
+                if (resumePrePause) audio.resumePlayback(generation)
+                if (applied) {
+                    if (failureReason != null) {
+                        socket.get()?.takeIf { helloReady.get() }?.send(
+                            ProtocolEncoder.playbackFailed(
+                                generation,
+                                failureReason!!,
+                                commandId.takeIf { it.isNotBlank() },
+                            ),
+                        )
+                    } else {
+                        audio.endPlayback()
+                    }
+                }
+            }
+            "playback.stop", "playback.skip" -> {
+                synchronized(playbackControlLock) {
+                    if (!PlaybackCommandGenerationPolicy.acceptsReset(
+                            generation,
+                            playbackGeneration.get(),
+                        )
+                    ) {
+                        applied = false
+                    } else {
+                        clearAnyLocalCommandPrePauseLocked()
+                        playbackGeneration.set(generation)
+                        val epoch = playbackEpoch.incrementAndGet()
+                        playbackTerminalState.invalidate(generation, epoch)
+                        pendingPlaybackAck.set(null)
+                        serverPlaybackPaused.set(false)
+                        promptDoneType.set(null)
+                        resumeUplinkAfterPlayback.set(false)
+                        audio.setPromptPlayback(false)
+                        if (action == "playback.stop") {
+                            audio.interruptPlayback()
+                        } else {
+                            audio.skipPlayback()
+                        }
+                    }
+                }
             }
             "playback.pause" -> {
-                applied = generation == playbackGeneration.get() && audio.pausePlayback()
+                synchronized(playbackControlLock) {
+                    if (generation != playbackGeneration.get()) {
+                        applied = false
+                    } else {
+                        serverPlaybackPaused.set(true)
+                        clearLocalCommandPrePauseLocked(resume = false)
+                        applied = audio.pausePlayback(generation)
+                    }
+                }
             }
             "playback.resume" -> {
-                applied = generation == playbackGeneration.get() && audio.resumePlayback()
+                synchronized(playbackControlLock) {
+                    if (generation != playbackGeneration.get()) {
+                        applied = false
+                    } else {
+                        serverPlaybackPaused.set(false)
+                        clearLocalCommandPrePauseLocked(resume = false)
+                        applied = audio.resumePlayback(generation)
+                    }
+                }
             }
             "playback.replay" -> {
-                playbackGeneration.set(generation)
-                pendingPlaybackAck.set(null)
-                applied = audio.replayPlayback()
-            }
-            "playback.skip" -> {
-                playbackGeneration.set(generation)
-                pendingPlaybackAck.set(null)
-                audio.skipPlayback()
+                synchronized(playbackControlLock) {
+                    if (!PlaybackCommandGenerationPolicy.acceptsReset(
+                            generation,
+                            playbackGeneration.get(),
+                        )
+                    ) {
+                        applied = false
+                    } else {
+                        clearAnyLocalCommandPrePauseLocked()
+                        playbackGeneration.set(generation)
+                        val epoch = playbackEpoch.incrementAndGet()
+                        playbackTerminalState.begin(generation, epoch)
+                        pendingPlaybackAck.set(null)
+                        serverPlaybackPaused.set(false)
+                        applied = audio.replayPlayback(generation)
+                    }
+                }
+                if (!applied && generation == playbackGeneration.get()) {
+                    handlePlaybackFailed(generation, "replay unavailable")
+                }
             }
             "audio.volume.adjust" -> {
+                synchronized(playbackControlLock) {
+                    val resume = clearLocalCommandPrePauseLocked(resume = true)
+                    if (resume) applied = audio.resumePlayback(generation)
+                }
                 val direction = when (message.optString("direction")) {
                     "up" -> AudioManager.ADJUST_RAISE
                     "down" -> AudioManager.ADJUST_LOWER
                     else -> 0
                 }
-                applied = audio.adjustPlaybackVolume(direction)
+                if (applied) applied = audio.adjustPlaybackVolume(direction)
             }
             else -> {
                 applied = false
@@ -649,6 +829,275 @@ class FastVoiceClient @JvmOverloads constructor(
             socket.get()?.takeIf { helloReady.get() }
                 ?.send(ProtocolEncoder.commandAck(commandId))
         }
+    }
+
+    private fun handleLocalCommandCandidate(generation: Int, text: String) {
+        if (!commandProtocolEnabled.get() || !helloReady.get() ||
+            generation != playbackGeneration.get()
+        ) {
+            audio.resumePlayback(generation)
+            return
+        }
+        val candidateId: String
+        val epoch: Long
+        synchronized(playbackControlLock) {
+            epoch = playbackEpoch.get()
+            if (playbackTerminalState.failureReason(generation, epoch) != null) {
+                audio.resumePlayback(generation)
+                return
+            }
+            candidateId = "lc-${localCommandSequence.incrementAndGet()}"
+            if (!localCommandPrePauseState.begin(candidateId, generation, epoch)) return
+            armLocalCommandTimeoutLocked(
+                candidateId,
+                generation,
+                epoch,
+                requireAccepted = false,
+                localCommandDecisionTimeoutMs,
+            )
+        }
+        val sent = socket.get()?.takeIf { helloReady.get() }?.send(
+            ProtocolEncoder.localCommandCandidate(candidateId, text, generation),
+        ) == true
+        if (!sent) applyLocalCommandDecision(candidateId, generation, "rejected")
+    }
+
+    private fun handleLocalCommandDecision(message: JSONObject) {
+        val id = message.optString("id")
+        val rawGeneration = message.opt("gen")
+        val generation = (rawGeneration as? Number)?.toLong()?.takeIf {
+            it in Int.MIN_VALUE.toLong()..Int.MAX_VALUE.toLong()
+        }?.toInt() ?: return
+        val decision = message.optString("decision")
+        if (id.isEmpty() || decision != "accepted" && decision != "rejected") return
+        applyLocalCommandDecision(id, generation, decision)
+    }
+
+    private fun applyLocalCommandDecision(id: String, generation: Int, decision: String) {
+        var resume = false
+        synchronized(playbackControlLock) {
+            val epoch = playbackEpoch.get()
+            when (
+                localCommandPrePauseState.decide(
+                    id,
+                    generation,
+                    decision,
+                    playbackGeneration.get(),
+                    epoch,
+                    serverPlaybackPaused.get(),
+                )
+            ) {
+                LocalCommandPrePauseState.Outcome.IGNORED -> return
+                LocalCommandPrePauseState.Outcome.ACCEPTED_HOLD -> {
+                    cancelLocalCommandTimeoutLocked()
+                    armLocalCommandTimeoutLocked(
+                        id,
+                        generation,
+                        epoch,
+                        requireAccepted = true,
+                        LocalCommandTimeoutPolicy.ACCEPTED_ACTION_TIMEOUT_MS,
+                    )
+                }
+                LocalCommandPrePauseState.Outcome.RESUME -> {
+                    cancelLocalCommandTimeoutLocked()
+                    resume = true
+                }
+                LocalCommandPrePauseState.Outcome.CLEARED -> {
+                    cancelLocalCommandTimeoutLocked()
+                }
+            }
+        }
+        if (resume) audio.resumePlayback(generation)
+    }
+
+    private fun armLocalCommandTimeoutLocked(
+        id: String,
+        generation: Int,
+        epoch: Long,
+        requireAccepted: Boolean,
+        delayMs: Long,
+    ) {
+        cancelLocalCommandTimeoutLocked()
+        localCommandDecisionFuture = scheduler.schedule({
+            var resume = false
+            synchronized(playbackControlLock) {
+                val outcome = localCommandPrePauseState.timeout(
+                    id,
+                    generation,
+                    epoch,
+                    playbackGeneration.get(),
+                    playbackEpoch.get(),
+                    serverPlaybackPaused.get(),
+                    requireAccepted,
+                )
+                if (outcome != LocalCommandPrePauseState.Outcome.IGNORED) {
+                    localCommandDecisionFuture = null
+                    resume = outcome == LocalCommandPrePauseState.Outcome.RESUME
+                }
+            }
+            if (resume) audio.resumePlayback(generation)
+        }, delayMs, TimeUnit.MILLISECONDS)
+    }
+
+    private fun cancelLocalCommandTimeoutLocked() {
+        localCommandDecisionFuture?.cancel(false)
+        localCommandDecisionFuture = null
+    }
+
+    /** Caller must hold [playbackControlLock]. */
+    private fun clearLocalCommandPrePauseLocked(resume: Boolean): Boolean {
+        val generation = playbackGeneration.get()
+        val epoch = playbackEpoch.get()
+        val cleared = localCommandPrePauseState.clearIfCurrent(generation, epoch)
+        if (cleared) cancelLocalCommandTimeoutLocked()
+        return cleared && resume && !serverPlaybackPaused.get()
+    }
+
+    /** Caller must hold [playbackControlLock]. */
+    private fun clearAnyLocalCommandPrePauseLocked() {
+        if (localCommandPrePauseState.clear()) cancelLocalCommandTimeoutLocked()
+    }
+
+    private fun invalidateCurrentPlaybackState() {
+        synchronized(playbackControlLock) {
+            val generation = playbackGeneration.get()
+            clearAnyLocalCommandPrePauseLocked()
+            val epoch = playbackEpoch.incrementAndGet()
+            playbackTerminalState.invalidate(generation, epoch)
+            pendingPlaybackAck.set(null)
+            serverPlaybackPaused.set(false)
+            audio.interruptPlayback()
+        }
+    }
+
+    private fun handlePlaybackFinished(generation: Int) {
+        val current = socket.get()?.takeIf { helloReady.get() }
+        if (commandProtocolEnabled.get()) {
+            val pendingAck: PendingPlaybackAck?
+            synchronized(playbackControlLock) {
+                if (generation != playbackGeneration.get() ||
+                    !playbackTerminalState.finish(generation, playbackEpoch.get())
+                ) return
+                pendingAck = pendingPlaybackAck.getAndSet(null)?.takeIf {
+                    it.generation == generation
+                }
+                clearLocalCommandPrePauseLocked(resume = false)
+            }
+            if (current?.send(ProtocolEncoder.playbackFinished(generation)) == true) {
+                pendingAck?.let { current.send(ProtocolEncoder.commandAck(it.commandId)) }
+            }
+        } else {
+            synchronized(playbackControlLock) {
+                if (generation != -1 ||
+                    !playbackTerminalState.finish(generation, playbackEpoch.get())
+                ) return
+            }
+            legacyPlaybackOpen.set(false)
+            promptDoneType.getAndSet(null)?.let { type ->
+                current?.send(ProtocolEncoder.promptDone(type))
+            }
+        }
+        audio.setPromptPlayback(false)
+        if (!commandProtocolEnabled.get() &&
+            resumeUplinkAfterPlayback.compareAndSet(true, false) && helloReady.get()
+        ) {
+            audio.setUplinkEnabled(true)
+        }
+    }
+
+    private fun handlePlaybackFailed(generation: Int, reason: String) {
+        val failureReason: String
+        val pendingAck: PendingPlaybackAck?
+        synchronized(playbackControlLock) {
+            if (generation != playbackGeneration.get()) return
+            val epoch = playbackEpoch.get()
+            val result = playbackTerminalState.fail(generation, epoch, reason)
+            if (result != PlaybackTerminalState.FailureResult.RECORDED) return
+            failureReason = playbackTerminalState.failureReason(generation, epoch) ?: return
+            pendingAck = pendingPlaybackAck.getAndSet(null)?.takeIf {
+                it.generation == generation
+            }
+            clearLocalCommandPrePauseLocked(resume = false)
+        }
+        promptDoneType.set(null)
+        resumeUplinkAfterPlayback.set(false)
+        audio.setPromptPlayback(false)
+        if (commandProtocolEnabled.get()) {
+            socket.get()?.takeIf { helloReady.get() }?.send(
+                ProtocolEncoder.playbackFailed(
+                    generation,
+                    failureReason,
+                    pendingAck?.commandId,
+                ),
+            )
+        } else {
+            legacyPlaybackOpen.set(false)
+            if (config.wakeEnabled) {
+                audio.setUplinkEnabled(false)
+                audio.setWakeArmed(
+                    helloReady.get() && wakeWords.get().isNotEmpty(),
+                )
+            } else {
+                audio.setWakeArmed(false)
+                audio.setUplinkEnabled(helloReady.get())
+            }
+        }
+    }
+
+    private fun ensureLegacyPlaybackStarted() {
+        if (commandProtocolEnabled.get() || !legacyPlaybackOpen.compareAndSet(false, true)) return
+        synchronized(playbackControlLock) {
+            if (commandProtocolEnabled.get() || !legacyPlaybackOpen.get()) return
+            clearAnyLocalCommandPrePauseLocked()
+            val epoch = playbackEpoch.incrementAndGet()
+            playbackGeneration.set(-1)
+            playbackTerminalState.begin(-1, epoch)
+            audio.beginPlayback(-1)
+        }
+    }
+
+    private fun handleTurnErrorTerminal(message: JSONObject) {
+        val recoveryId = message.optString("recovery_id")
+        val rawAudioStarted = message.opt("server_audio_started")
+        val finalState = message.optString("final_state")
+        if (recoveryId.isEmpty() || rawAudioStarted !is Boolean ||
+            finalState != FastVoiceState.SLEEPING.value &&
+            finalState != FastVoiceState.LISTENING.value
+        ) return
+        val transition = fallbackPromptGate.onTerminal(
+            recoveryId,
+            rawAudioStarted,
+            finalState,
+        )
+        when (transition.action) {
+            FallbackPromptGate.Action.NONE -> Unit
+            FallbackPromptGate.Action.STOP_LOCAL -> {
+                cancelLocalFallback(restoreServerState = false)
+                applyTurnErrorFinalState(finalState)
+            }
+            FallbackPromptGate.Action.APPLY_FINAL_STATE -> {
+                applyTurnErrorFinalState(finalState)
+            }
+            FallbackPromptGate.Action.PLAY_LOCAL -> {
+                startLocalFallback(
+                    requireNotNull(transition.recoveryId),
+                    requireNotNull(transition.prompt),
+                    requireNotNull(transition.finalState),
+                )
+            }
+        }
+    }
+
+    private fun applyTurnErrorFinalState(finalState: String) {
+        val uplink = turnErrorUplinkState.afterTerminal(
+            commandProtocolEnabled.get(),
+            finalState == FastVoiceState.LISTENING.value,
+        )
+        audio.setUplinkEnabled(uplink)
+        audio.setWakeArmed(
+            !uplink && finalState == FastVoiceState.SLEEPING.value &&
+                config.wakeEnabled && helloReady.get() && wakeWords.get().isNotEmpty(),
+        )
     }
 
     private fun handleContextUpdated(message: JSONObject) {
@@ -748,9 +1197,10 @@ class FastVoiceClient @JvmOverloads constructor(
         webSocket: WebSocket,
         error: FastVoiceError?,
     ) {
-        if (socket.compareAndSet(webSocket, null)) {
+        sessions.runIfCurrent(generation) {
+            if (!socket.compareAndSet(webSocket, null)) return@runIfCurrent
             helloReady.set(false)
-            fallbackPromptGate.clear()
+            fallbackPromptGate.resetSession()
             cancelLocalFallback(restoreServerState = false)
             audio.setWakeArmed(false)
             audio.setUplinkEnabled(false)
@@ -763,8 +1213,16 @@ class FastVoiceClient @JvmOverloads constructor(
 
     private fun clearConnectionScopedState() {
         commandProtocolEnabled.set(false)
-        playbackGeneration.set(-1)
-        pendingPlaybackAck.set(null)
+        legacyPlaybackOpen.set(false)
+        synchronized(playbackControlLock) {
+            clearAnyLocalCommandPrePauseLocked()
+            playbackGeneration.set(-1)
+            val epoch = playbackEpoch.incrementAndGet()
+            playbackTerminalState.invalidate(-1, epoch)
+            pendingPlaybackAck.set(null)
+            serverPlaybackPaused.set(false)
+        }
+        turnErrorUplinkState.reset()
         promptDoneType.set(null)
         resumeUplinkAfterPlayback.set(false)
         audio.setPromptPlayback(false)
@@ -773,14 +1231,30 @@ class FastVoiceClient @JvmOverloads constructor(
     }
 
     private fun observeServerAudio() {
-        fallbackPromptGate.onServerAudio()
-        if (localFallbackActive.get()) {
+        val transition = fallbackPromptGate.onServerAudio()
+        if (transition.action == FallbackPromptGate.Action.STOP_LOCAL ||
+            localFallbackActive.get()
+        ) {
             cancelLocalFallback(restoreServerState = false)
         }
     }
 
-    private fun startLocalFallback(prompt: String) {
-        val player = fallbackPromptPlayer ?: return
+    private fun clearTurnErrorFallback() {
+        val transition = fallbackPromptGate.clear()
+        if (transition.action == FallbackPromptGate.Action.STOP_LOCAL ||
+            localFallbackActive.get()
+        ) {
+            cancelLocalFallback(restoreServerState = false)
+        }
+    }
+
+    private fun startLocalFallback(recoveryId: String, prompt: String, finalState: String) {
+        val player = fallbackPromptPlayer
+        if (player == null) {
+            fallbackPromptGate.finishLocal(recoveryId)
+            applyTurnErrorFinalState(finalState)
+            return
+        }
         cancelLocalFallback(restoreServerState = false)
         val generation = localFallbackGeneration.incrementAndGet()
         localFallbackActive.set(true)
@@ -796,14 +1270,18 @@ class FastVoiceClient @JvmOverloads constructor(
                     return@post
                 }
                 audio.setPromptPlayback(false)
-                restoreAudioForServerState()
+                if (fallbackPromptGate.finishLocal(recoveryId)) {
+                    applyTurnErrorFinalState(finalState)
+                }
             }
         }
         if (!accepted && localFallbackGeneration.get() == generation &&
             localFallbackActive.compareAndSet(true, false)
         ) {
             audio.setPromptPlayback(false)
-            restoreAudioForServerState()
+            if (fallbackPromptGate.finishLocal(recoveryId)) {
+                applyTurnErrorFinalState(finalState)
+            }
             emitError(code = "fallback_tts_unavailable")
         }
     }
@@ -835,7 +1313,7 @@ class FastVoiceClient @JvmOverloads constructor(
     }
 
     private fun scheduleReconnect(generation: Long) {
-        if (!started.get() || !config.autoReconnect || generation != connectionGeneration.get()) return
+        if (!started.get() || !config.autoReconnect || !sessions.isCurrent(generation)) return
         val attempt = reconnectAttempt.getAndIncrement()
         val delays = longArrayOf(1, 2, 4, 8, 15, 30)
         val delay = delays[minOf(attempt, delays.lastIndex)]
@@ -853,9 +1331,6 @@ class FastVoiceClient @JvmOverloads constructor(
     private fun selectedLocalWakeWords(): List<String> =
         if (config.preferredWakeWords.isEmpty()) AudioEngine.SUPPORTED_WAKE_WORDS.toList()
         else config.preferredWakeWords
-
-    private fun isCurrent(generation: Long, webSocket: WebSocket): Boolean =
-        started.get() && generation == connectionGeneration.get() && socket.get() === webSocket
 
     private fun emitError(
         code: String? = null,
