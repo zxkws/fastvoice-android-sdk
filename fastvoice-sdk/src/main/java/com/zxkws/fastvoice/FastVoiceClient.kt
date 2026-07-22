@@ -10,15 +10,15 @@ import android.os.Looper
 import com.zxkws.fastvoice.internal.AndroidTextToSpeechPromptPlayer
 import com.zxkws.fastvoice.internal.AudioEngine
 import com.zxkws.fastvoice.internal.ClientSessionEpoch
+import com.zxkws.fastvoice.internal.CurrentProtocol
 import com.zxkws.fastvoice.internal.FallbackPromptGate
 import com.zxkws.fastvoice.internal.FallbackPromptPlayer
 import com.zxkws.fastvoice.internal.LocalCommandPrePauseState
 import com.zxkws.fastvoice.internal.LocalCommandTimeoutPolicy
-import com.zxkws.fastvoice.internal.MonotonicVersionStore
 import com.zxkws.fastvoice.internal.PlaybackCommandGenerationPolicy
 import com.zxkws.fastvoice.internal.PlaybackTerminalState
 import com.zxkws.fastvoice.internal.ProtocolEncoder
-import com.zxkws.fastvoice.internal.ServerStateSideEffectPolicy
+import com.zxkws.fastvoice.internal.ServerHelloCapabilities
 import com.zxkws.fastvoice.internal.TurnErrorUplinkState
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -29,8 +29,6 @@ import okio.ByteString
 import java.io.Closeable
 import java.net.Proxy
 import java.util.Collections
-import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
@@ -56,16 +54,6 @@ class FastVoiceClient @JvmOverloads constructor(
     private val listener: FastVoiceListener = FastVoiceListenerAdapter(),
 ) : Closeable {
 
-    private data class PendingArrival(
-        val arrival: SpotArrival,
-        val arrivedContext: VehicleContext,
-    )
-
-    private data class InFlightArrival(
-        val arrival: SpotArrival,
-        val contextVersion: Long,
-    )
-
     private data class PendingPlaybackAck(
         val commandId: String,
         val generation: Int,
@@ -75,13 +63,12 @@ class FastVoiceClient @JvmOverloads constructor(
     private val mainHandler = Handler(Looper.getMainLooper())
     private val started = AtomicBoolean(false)
     private val closed = AtomicBoolean(false)
+    private val protocolTerminationInProgress = AtomicBoolean(false)
     private val helloReady = AtomicBoolean(false)
     private val sessions = ClientSessionEpoch()
     private val reconnectAttempt = AtomicInteger(0)
     private val socket = AtomicReference<WebSocket?>(null)
     private val wakeWords = AtomicReference<List<String>>(emptyList())
-    private val commandProtocolEnabled = AtomicBoolean(false)
-    private val legacyPlaybackOpen = AtomicBoolean(false)
     private val playbackGeneration = AtomicInteger(-1)
     private val playbackEpoch = AtomicLong(0)
     private val pendingPlaybackAck = AtomicReference<PendingPlaybackAck?>(null)
@@ -96,13 +83,6 @@ class FastVoiceClient @JvmOverloads constructor(
         LocalCommandTimeoutPolicy.clientTimeoutMs(
             LocalCommandTimeoutPolicy.DEFAULT_SERVER_TIMEOUT_MS,
         )
-    private val resumeUplinkAfterPlayback = AtomicBoolean(false)
-    private val promptDoneType = AtomicReference<String?>(null)
-    private val pendingArrival = AtomicReference<PendingArrival?>(null)
-    private val inFlightArrivalContexts = ConcurrentHashMap<Long, InFlightArrival>()
-    private val arrivalEventIds = ConcurrentHashMap<String, SpotArrival>()
-    private val lastContext = AtomicReference<VehicleContext?>(null)
-    private val latestServerState = AtomicReference(FastVoiceState.SLEEPING.value)
     private val fallbackPromptGate = FallbackPromptGate()
     private val turnErrorUplinkState = TurnErrorUplinkState()
     private val localFallbackActive = AtomicBoolean(false)
@@ -112,11 +92,6 @@ class FastVoiceClient @JvmOverloads constructor(
         Thread(runnable, "fastvoice-scheduler").apply { isDaemon = true }
     }
     private var reconnectFuture: ScheduledFuture<*>? = null
-    private var contextRefreshFuture: ScheduledFuture<*>? = null
-
-    private val versions = config.deviceId?.let { deviceId ->
-        MonotonicVersionStore(appContext, config.endpoint, deviceId)
-    }
 
     private val httpClient = OkHttpClient.Builder()
         .apply { if (config.bypassSystemProxy) proxy(Proxy.NO_PROXY) }
@@ -162,7 +137,7 @@ class FastVoiceClient @JvmOverloads constructor(
             override fun onPlaybackStarted() = Unit
 
             override fun onPlaybackProgress(generation: Int, playedMs: Long) {
-                if (!commandProtocolEnabled.get() || generation != playbackGeneration.get()) return
+                if (generation != playbackGeneration.get()) return
                 val epoch = playbackEpoch.get()
                 if (playbackTerminalState.failureReason(generation, epoch) != null) return
                 socket.get()?.takeIf { helloReady.get() }
@@ -183,11 +158,7 @@ class FastVoiceClient @JvmOverloads constructor(
                     "$code: $message",
                     error,
                 )
-                // A microphone/speaker/codec failure affects the host; an expected source fallback
-                // remains a diagnostic only.
-                if (code != "microphone_source_fallback") {
-                    emitError(code = code, message = message.ifEmpty { null }, cause = error)
-                }
+                emitError(code = code, message = message.ifEmpty { null }, cause = error)
             }
             },
         )
@@ -216,8 +187,10 @@ class FastVoiceClient @JvmOverloads constructor(
      * Starts local audio and opens the WebSocket. Returns false when permission or audio setup is
      * unavailable. Connection failures are reported asynchronously and automatically retried.
      */
+    @Synchronized
     fun start(): Boolean {
         check(!closed.get()) { "FastVoiceClient is closed" }
+        if (protocolTerminationInProgress.get()) return false
         if (started.get()) return true
         if (appContext.checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
             PackageManager.PERMISSION_GRANTED
@@ -240,17 +213,17 @@ class FastVoiceClient @JvmOverloads constructor(
     }
 
     /** Stops audio and reconnect work. The same instance may be started again. */
+    @Synchronized
     fun stop() {
+        if (protocolTerminationInProgress.get()) return
         if (!started.compareAndSet(true, false)) return
         sessions.invalidate()
         helloReady.set(false)
         fallbackPromptGate.resetSession()
-        cancelLocalFallback(restoreServerState = false)
+        cancelLocalFallback()
         audio.setWakeArmed(false)
         reconnectFuture?.cancel(false)
         reconnectFuture = null
-        contextRefreshFuture?.cancel(false)
-        contextRefreshFuture = null
         socket.getAndSet(null)?.close(1_000, "client stop")
         clearConnectionScopedState()
         audio.stop()
@@ -259,11 +232,8 @@ class FastVoiceClient @JvmOverloads constructor(
     /** Immediately stops local playback and asks the server to cancel the active response. */
     fun interrupt() {
         fallbackPromptGate.clear()
-        cancelLocalFallback(restoreServerState = false)
-        legacyPlaybackOpen.set(false)
+        cancelLocalFallback()
         invalidateCurrentPlaybackState()
-        promptDoneType.set(null)
-        resumeUplinkAfterPlayback.set(false)
         socket.get()?.takeIf { helloReady.get() }
             ?.send(ProtocolEncoder.interrupt())
     }
@@ -314,68 +284,14 @@ class FastVoiceClient @JvmOverloads constructor(
             emitError(code = "trusted_message_transport_unavailable")
             return false
         }
-        if (!current.send(ProtocolEncoder.trustedMessage(rawJson))) {
+        if (!current.send(rawJson)) {
             emitError(code = "trusted_message_send_failed")
             return false
         }
         return true
     }
 
-    /**
-     * Queues the latest trusted context and sends it as soon as device authentication completes.
-     * Returns false only when this client was created without device credentials.
-     */
-    @Deprecated(
-        message = "Unsigned context is supported only by legacy servers; use sendTrustedMessage",
-    )
-    fun updateContext(context: VehicleContext): Boolean {
-        if (!requireTrustedDevice("context_credentials_required")) return false
-        lastContext.set(context)
-        if (helloReady.get()) sendContext(context, arrival = null)
-        scheduleContextRefresh()
-        return true
-    }
-
-    /**
-     * Atomically prepares an `arrived` trusted context and, after server acknowledgement, sends the
-     * matching arrival event. IDs, versions, timestamps, and event IDs are managed by the SDK.
-     */
-    @Deprecated(
-        message = "Unsigned arrival is supported only by legacy servers; use sendTrustedMessage",
-    )
-    fun reportArrival(arrival: SpotArrival): Boolean {
-        if (!requireTrustedDevice("arrival_credentials_required")) return false
-        val current = lastContext.get()
-        val arrived = VehicleContext(
-            parkId = arrival.parkId,
-            routeId = arrival.routeId,
-            currentSpotId = arrival.spotId,
-            currentStationId = arrival.stationId,
-            nextStationId = current?.nextStationId,
-            destinationId = current?.destinationId,
-            vehicleName = current?.vehicleName,
-            currentLocation = current?.currentLocation,
-            routeName = current?.routeName,
-            destination = current?.destination,
-            nextStop = current?.nextStop,
-            operationStatus = VehicleContext.STATUS_ARRIVED,
-            speedMps = current?.speedMps,
-            batteryPercent = current?.batteryPercent,
-            passengerCount = current?.passengerCount,
-            latitude = current?.latitude,
-            longitude = current?.longitude,
-        )
-        lastContext.set(arrived)
-        val pending = PendingArrival(arrival, arrived)
-        pendingArrival.set(pending)
-        if (helloReady.get()) {
-            pendingArrival.compareAndSet(pending, null)
-            sendContext(arrived, arrival)
-        }
-        scheduleContextRefresh()
-        return true
-    }
-
+    @Synchronized
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         stop()
@@ -441,7 +357,10 @@ class FastVoiceClient @JvmOverloads constructor(
             val packet = bytes.toByteArray()
             sessions.runIfCurrent(generation) {
                 if (started.get() && socket.get() === webSocket) {
-                    ensureLegacyPlaybackStarted()
+                    if (!helloReady.get()) {
+                        rejectServerHello()
+                        return@runIfCurrent
+                    }
                     observeServerAudio()
                     audio.enqueueOpus(packet)
                 }
@@ -455,11 +374,15 @@ class FastVoiceClient @JvmOverloads constructor(
                 parsed.fold(
                     onSuccess = ::handleServerMessage,
                     onFailure = { error ->
-                        emitError(
-                            code = "invalid_server_message",
-                            message = error.message,
-                            cause = error,
-                        )
+                        if (helloReady.get()) {
+                            emitError(
+                                code = "invalid_server_message",
+                                message = error.message,
+                                cause = error,
+                            )
+                        } else {
+                            rejectServerHello()
+                        }
                     },
                 )
             }
@@ -490,11 +413,25 @@ class FastVoiceClient @JvmOverloads constructor(
     }
 
     private fun handleServerMessage(message: JSONObject) {
-        when (message.optString("type")) {
-            "hello" -> handleHello(message)
+        val type = message.strictString("type") ?: run {
+            rejectServerHello()
+            return
+        }
+        if (!helloReady.get() && !CurrentProtocol.acceptsBeforeHello(type)) {
+            rejectServerHello()
+            return
+        }
+        if (type == "hello") {
+            if (helloReady.get()) rejectServerHello() else handleHello(message)
+            return
+        }
+        when (type) {
             "state" -> handleState(message.optString("value"))
             "wake_ack" -> handleWakeAcknowledgement(message)
-            "spot_arrival_prompt" -> handleServerPrompt(message, "spot_prompt_done")
+            "spot_arrival_prompt" -> {
+                clearTurnErrorFallback()
+                handleServerPrompt(message)
+            }
             "asr" -> {
                 clearTurnErrorFallback()
                 emit(FastVoiceEvent.Asr(message.optString("text")))
@@ -511,11 +448,7 @@ class FastVoiceClient @JvmOverloads constructor(
                     fallbackPromptGate.clear()
                 }
                 if (transition.action == FallbackPromptGate.Action.STOP_LOCAL) {
-                    cancelLocalFallback(restoreServerState = false)
-                }
-                if (!commandProtocolEnabled.get()) {
-                    audio.setUplinkEnabled(false)
-                    resumeUplinkAfterPlayback.set(true)
+                    cancelLocalFallback()
                 }
                 emitError(
                     code = message.nullableString("code"),
@@ -525,18 +458,6 @@ class FastVoiceClient @JvmOverloads constructor(
             }
             "turn_error_terminal" -> handleTurnErrorTerminal(message)
             "local_command_decision" -> handleLocalCommandDecision(message)
-            "audio_end" -> if (!commandProtocolEnabled.get() && legacyPlaybackOpen.get()) {
-                audio.endPlayback()
-            }
-            "interrupt" -> {
-                fallbackPromptGate.clear()
-                cancelLocalFallback(restoreServerState = false)
-                promptDoneType.set(null)
-                resumeUplinkAfterPlayback.set(false)
-                audio.setPromptPlayback(false)
-                legacyPlaybackOpen.set(false)
-                invalidateCurrentPlaybackState()
-            }
             "context_updated" -> handleContextUpdated(message)
             "context_error" -> handleContextError(message)
             "arrival_accepted" -> handleArrivalAccepted(message)
@@ -546,26 +467,35 @@ class FastVoiceClient @JvmOverloads constructor(
 
     private fun handleHello(message: JSONObject) {
         val control = message.optJSONObject("control")
-        commandProtocolEnabled.set(
-            control?.optBoolean("enabled") == true &&
-                control.optString("protocol") == "commands-v1",
+        val audioConfig = message.optJSONObject("audio")
+        val localCommand = message.optJSONObject("local_command")
+        val wake = message.optJSONObject("wake")
+        val capabilities = ServerHelloCapabilities(
+            encoding = audioConfig?.strictString("encoding"),
+            inputRate = audioConfig?.strictLong("input_rate"),
+            outputRate = audioConfig?.strictLong("output_rate"),
+            frameMs = audioConfig?.strictLong("frame_ms"),
+            wakeEnabled = wake?.strictBoolean("enabled"),
+            wakeWords = wake?.strictStringList("words"),
+            controlEnabled = control?.strictBoolean("enabled"),
+            controlProtocol = control?.strictString("protocol"),
+            controlActions = control?.strictStringList("actions"),
+            localCommandEnabled = localCommand?.strictBoolean("enabled"),
+            candidateMessage = localCommand?.strictString("candidate_message"),
+            decisionMessage = localCommand?.strictString("decision_message"),
+            confirmTimeoutMs = localCommand?.strictLong("confirm_timeout_ms"),
+            generationBound = localCommand?.strictBoolean("generation_bound"),
         )
+        if (!CurrentProtocol.acceptsHello(capabilities, AudioEngine.SUPPORTED_WAKE_WORDS)) {
+            rejectServerHello()
+            return
+        }
         localCommandDecisionTimeoutMs = LocalCommandTimeoutPolicy.clientTimeoutMs(
-            message.optJSONObject("local_command")?.optLong(
-                "confirm_timeout_ms",
-                LocalCommandTimeoutPolicy.DEFAULT_SERVER_TIMEOUT_MS,
-            ) ?: LocalCommandTimeoutPolicy.DEFAULT_SERVER_TIMEOUT_MS,
+            requireNotNull(capabilities.confirmTimeoutMs),
         )
         val negotiated = linkedSetOf<String>()
-        val wake = message.optJSONObject("wake")
-        val words = wake?.optJSONArray("words")
-        if (words != null) {
-            for (index in 0 until words.length()) {
-                words.optString(index).takeIf(String::isNotBlank)?.let(negotiated::add)
-            }
-        }
-        wake?.optString("word")?.takeIf(String::isNotBlank)?.let(negotiated::add)
-        val active = if (wake?.optBoolean("enabled") == true) {
+        negotiated.addAll(requireNotNull(capabilities.wakeWords))
+        val active = if (capabilities.wakeEnabled == true) {
             negotiated.filterTo(linkedSetOf()) { it in AudioEngine.SUPPORTED_WAKE_WORDS }
         } else {
             linkedSetOf()
@@ -582,41 +512,31 @@ class FastVoiceClient @JvmOverloads constructor(
             emitError(code = it)
         }
 
-        pendingArrival.getAndSet(null)?.let { pending ->
-            sendContext(pending.arrivedContext, pending.arrival)
-        } ?: lastContext.get()?.let { context ->
-            sendContext(context, arrival = null)
+    }
+
+    private fun rejectServerHello() {
+        if (!protocolTerminationInProgress.compareAndSet(false, true)) return
+        try {
+            emitError(code = "unsupported_server_protocol")
+            started.set(false)
+            helloReady.set(false)
+            sessions.invalidate()
+            fallbackPromptGate.resetSession()
+            cancelLocalFallback()
+            reconnectFuture?.cancel(false)
+            reconnectFuture = null
+            audio.setWakeArmed(false)
+            audio.setUplinkEnabled(false)
+            socket.getAndSet(null)?.close(1_002, "commands-v1 with opus is required")
+            clearConnectionScopedState()
+            audio.stop()
+        } finally {
+            protocolTerminationInProgress.set(false)
         }
-        scheduleContextRefresh()
     }
 
     private fun handleState(rawValue: String) {
-        latestServerState.set(rawValue)
         if (rawValue == FastVoiceState.RECOGNIZING.value) clearTurnErrorFallback()
-        val commandProtocol = commandProtocolEnabled.get()
-        if (ServerStateSideEffectPolicy.appliesLegacySleepingSideEffects(
-                commandProtocol,
-                rawValue,
-            )
-        ) {
-            promptDoneType.set(null)
-            resumeUplinkAfterPlayback.set(false)
-            if (!localFallbackActive.get()) {
-                audio.setPromptPlayback(false)
-                audio.setUplinkEnabled(false)
-                audio.setWakeArmed(
-                    config.wakeEnabled && helloReady.get() && wakeWords.get().isNotEmpty(),
-                )
-            }
-        } else if (!config.wakeEnabled &&
-            ServerStateSideEffectPolicy.appliesLegacyListeningSideEffects(
-                commandProtocol,
-                rawValue,
-            ) && !localFallbackActive.get()
-        ) {
-            audio.setWakeArmed(false)
-            audio.setUplinkEnabled(true)
-        }
         emit(FastVoiceEvent.StateChanged(FastVoiceState.fromRaw(rawValue)))
     }
 
@@ -624,36 +544,28 @@ class FastVoiceClient @JvmOverloads constructor(
         clearTurnErrorFallback()
         if (!message.optBoolean("awaiting_command")) return
         if (message.optString("audio") == "server") {
-            handleServerPrompt(message, "wake_prompt_done")
+            handleServerPrompt(message)
         } else {
-            // Current servers always provide the configured server voice. On an older server, do
-            // not invoke Android TTS with a different voice; simply open the capture window.
-            socket.get()?.send(ProtocolEncoder.promptDone("wake_prompt_done"))
-            audio.setUplinkEnabled(true)
+            emitError(code = "unsupported_wake_prompt_audio")
         }
     }
 
-    private fun handleServerPrompt(message: JSONObject, doneType: String) {
+    private fun handleServerPrompt(message: JSONObject) {
         if (message.optString("audio") != "server") return
-        if (doneType == "spot_prompt_done") clearTurnErrorFallback()
-        if (commandProtocolEnabled.get()) {
-            promptDoneType.set(null)
-            resumeUplinkAfterPlayback.set(false)
-        } else {
-            promptDoneType.set(doneType)
-            resumeUplinkAfterPlayback.set(true)
-            ensureLegacyPlaybackStarted()
-        }
         audio.setWakeArmed(false)
         audio.setPromptPlayback(true)
         audio.setUplinkEnabled(false)
     }
 
     private fun handleCommand(message: JSONObject) {
-        if (!commandProtocolEnabled.get()) return
-        val commandId = message.optString("id")
-        val action = message.optString("action")
-        val generation = message.optInt("gen", playbackGeneration.get())
+        val commandId = message.strictString("id")?.takeIf(String::isNotBlank) ?: return
+        val action = message.strictString("action")?.takeIf(String::isNotBlank) ?: return
+        val ack = message.strictBoolean("ack") ?: return
+        val generation = message.strictInt("gen") ?: if (action in CurrentProtocol.PLAYBACK_ACTIONS) {
+            return
+        } else {
+            playbackGeneration.get()
+        }
         var applied = true
         var ackAfterPlayback = false
 
@@ -711,7 +623,7 @@ class FastVoiceClient @JvmOverloads constructor(
                         val epoch = playbackEpoch.get()
                         resumePrePause = clearLocalCommandPrePauseLocked(resume = true)
                         failureReason = playbackTerminalState.failureReason(generation, epoch)
-                        ackAfterPlayback = message.optBoolean("ack")
+                        ackAfterPlayback = ack
                         if (failureReason == null && ackAfterPlayback && commandId.isNotBlank()) {
                             pendingPlaybackAck.set(PendingPlaybackAck(commandId, generation))
                         } else {
@@ -749,8 +661,6 @@ class FastVoiceClient @JvmOverloads constructor(
                         playbackTerminalState.invalidate(generation, epoch)
                         pendingPlaybackAck.set(null)
                         serverPlaybackPaused.set(false)
-                        promptDoneType.set(null)
-                        resumeUplinkAfterPlayback.set(false)
                         audio.setPromptPlayback(false)
                         if (action == "playback.stop") {
                             audio.interruptPlayback()
@@ -825,16 +735,14 @@ class FastVoiceClient @JvmOverloads constructor(
         if (!applied) {
             log(FastVoiceLogLevel.INFO, "server action was not applicable: $action")
         }
-        if (applied && message.optBoolean("ack") && !ackAfterPlayback && commandId.isNotBlank()) {
+        if (applied && ack && !ackAfterPlayback) {
             socket.get()?.takeIf { helloReady.get() }
                 ?.send(ProtocolEncoder.commandAck(commandId))
         }
     }
 
     private fun handleLocalCommandCandidate(generation: Int, text: String) {
-        if (!commandProtocolEnabled.get() || !helloReady.get() ||
-            generation != playbackGeneration.get()
-        ) {
+        if (!helloReady.get() || generation != playbackGeneration.get()) {
             audio.resumePlayback(generation)
             return
         }
@@ -967,42 +875,26 @@ class FastVoiceClient @JvmOverloads constructor(
             pendingPlaybackAck.set(null)
             serverPlaybackPaused.set(false)
             audio.interruptPlayback()
+            audio.setPromptPlayback(false)
         }
     }
 
     private fun handlePlaybackFinished(generation: Int) {
         val current = socket.get()?.takeIf { helloReady.get() }
-        if (commandProtocolEnabled.get()) {
-            val pendingAck: PendingPlaybackAck?
-            synchronized(playbackControlLock) {
-                if (generation != playbackGeneration.get() ||
-                    !playbackTerminalState.finish(generation, playbackEpoch.get())
-                ) return
-                pendingAck = pendingPlaybackAck.getAndSet(null)?.takeIf {
-                    it.generation == generation
-                }
-                clearLocalCommandPrePauseLocked(resume = false)
+        val pendingAck: PendingPlaybackAck?
+        synchronized(playbackControlLock) {
+            if (generation != playbackGeneration.get() ||
+                !playbackTerminalState.finish(generation, playbackEpoch.get())
+            ) return
+            pendingAck = pendingPlaybackAck.getAndSet(null)?.takeIf {
+                it.generation == generation
             }
-            if (current?.send(ProtocolEncoder.playbackFinished(generation)) == true) {
-                pendingAck?.let { current.send(ProtocolEncoder.commandAck(it.commandId)) }
-            }
-        } else {
-            synchronized(playbackControlLock) {
-                if (generation != -1 ||
-                    !playbackTerminalState.finish(generation, playbackEpoch.get())
-                ) return
-            }
-            legacyPlaybackOpen.set(false)
-            promptDoneType.getAndSet(null)?.let { type ->
-                current?.send(ProtocolEncoder.promptDone(type))
-            }
+            clearLocalCommandPrePauseLocked(resume = false)
+        }
+        if (current?.send(ProtocolEncoder.playbackFinished(generation)) == true) {
+            pendingAck?.let { current.send(ProtocolEncoder.commandAck(it.commandId)) }
         }
         audio.setPromptPlayback(false)
-        if (!commandProtocolEnabled.get() &&
-            resumeUplinkAfterPlayback.compareAndSet(true, false) && helloReady.get()
-        ) {
-            audio.setUplinkEnabled(true)
-        }
     }
 
     private fun handlePlaybackFailed(generation: Int, reason: String) {
@@ -1019,41 +911,14 @@ class FastVoiceClient @JvmOverloads constructor(
             }
             clearLocalCommandPrePauseLocked(resume = false)
         }
-        promptDoneType.set(null)
-        resumeUplinkAfterPlayback.set(false)
         audio.setPromptPlayback(false)
-        if (commandProtocolEnabled.get()) {
-            socket.get()?.takeIf { helloReady.get() }?.send(
-                ProtocolEncoder.playbackFailed(
-                    generation,
-                    failureReason,
-                    pendingAck?.commandId,
-                ),
-            )
-        } else {
-            legacyPlaybackOpen.set(false)
-            if (config.wakeEnabled) {
-                audio.setUplinkEnabled(false)
-                audio.setWakeArmed(
-                    helloReady.get() && wakeWords.get().isNotEmpty(),
-                )
-            } else {
-                audio.setWakeArmed(false)
-                audio.setUplinkEnabled(helloReady.get())
-            }
-        }
-    }
-
-    private fun ensureLegacyPlaybackStarted() {
-        if (commandProtocolEnabled.get() || !legacyPlaybackOpen.compareAndSet(false, true)) return
-        synchronized(playbackControlLock) {
-            if (commandProtocolEnabled.get() || !legacyPlaybackOpen.get()) return
-            clearAnyLocalCommandPrePauseLocked()
-            val epoch = playbackEpoch.incrementAndGet()
-            playbackGeneration.set(-1)
-            playbackTerminalState.begin(-1, epoch)
-            audio.beginPlayback(-1)
-        }
+        socket.get()?.takeIf { helloReady.get() }?.send(
+            ProtocolEncoder.playbackFailed(
+                generation,
+                failureReason,
+                pendingAck?.commandId,
+            ),
+        )
     }
 
     private fun handleTurnErrorTerminal(message: JSONObject) {
@@ -1072,7 +937,7 @@ class FastVoiceClient @JvmOverloads constructor(
         when (transition.action) {
             FallbackPromptGate.Action.NONE -> Unit
             FallbackPromptGate.Action.STOP_LOCAL -> {
-                cancelLocalFallback(restoreServerState = false)
+                cancelLocalFallback()
                 applyTurnErrorFinalState(finalState)
             }
             FallbackPromptGate.Action.APPLY_FINAL_STATE -> {
@@ -1089,10 +954,7 @@ class FastVoiceClient @JvmOverloads constructor(
     }
 
     private fun applyTurnErrorFinalState(finalState: String) {
-        val uplink = turnErrorUplinkState.afterTerminal(
-            commandProtocolEnabled.get(),
-            finalState == FastVoiceState.LISTENING.value,
-        )
+        val uplink = turnErrorUplinkState.afterTerminal()
         audio.setUplinkEnabled(uplink)
         audio.setWakeArmed(
             !uplink && finalState == FastVoiceState.SLEEPING.value &&
@@ -1101,27 +963,17 @@ class FastVoiceClient @JvmOverloads constructor(
     }
 
     private fun handleContextUpdated(message: JSONObject) {
-        val version = message.optLong("version", -1L)
-        emit(FastVoiceEvent.ContextUpdated(version))
-        val pending = inFlightArrivalContexts.remove(version) ?: return
-        sendArrival(pending.arrival)
+        emit(FastVoiceEvent.ContextUpdated(message.optLong("version", -1L)))
     }
 
     private fun handleContextError(message: JSONObject) {
         val code = message.nullableString("code")
         val errorMessage = message.nullableString("message")
-        // The server currently does not echo the rejected version. There can be only one arrival
-        // context request at a time, so fail it explicitly instead of sending an untrusted event.
-        if (inFlightArrivalContexts.isNotEmpty()) {
-            inFlightArrivalContexts.clear()
-            emit(FastVoiceEvent.ArrivalRejected(code, errorMessage))
-        }
         emitError(code = code, message = errorMessage)
     }
 
     private fun handleArrivalAccepted(message: JSONObject) {
         val eventId = message.optString("event_id")
-        arrivalEventIds.remove(eventId)
         emit(
             FastVoiceEvent.ArrivalAccepted(
                 eventId = eventId,
@@ -1138,60 +990,6 @@ class FastVoiceClient @JvmOverloads constructor(
         emitError(code = code, message = errorMessage)
     }
 
-    private fun sendContext(context: VehicleContext, arrival: SpotArrival?) {
-        if (!helloReady.get()) return
-        val store = versions ?: return
-        val version = runCatching { store.nextContextVersion() }.getOrElse { error ->
-            emitError(code = "context_version_failed", message = error.message, cause = error)
-            return
-        }
-        val payload = ProtocolEncoder.contextUpdate(
-            config,
-            context,
-            version,
-            System.currentTimeMillis() / 1_000.0,
-        )
-        if (arrival != null) inFlightArrivalContexts[version] = InFlightArrival(arrival, version)
-        if (socket.get()?.send(payload) != true) {
-            inFlightArrivalContexts.remove(version)
-            if (arrival != null) pendingArrival.set(PendingArrival(arrival, context))
-            emitError(code = "context_send_failed")
-        }
-    }
-
-    private fun sendArrival(arrival: SpotArrival) {
-        val store = versions ?: return
-        val version = runCatching { store.nextArrivalVersion() }.getOrElse { error ->
-            emitError(code = "arrival_version_failed", message = error.message, cause = error)
-            return
-        }
-        val eventId = UUID.randomUUID().toString()
-        val payload = ProtocolEncoder.spotArrival(
-            config,
-            arrival,
-            version,
-            System.currentTimeMillis() / 1_000.0,
-            eventId,
-        )
-        arrivalEventIds[eventId] = arrival
-        if (socket.get()?.send(payload) != true) {
-            arrivalEventIds.remove(eventId)
-            emitError(code = "arrival_send_failed")
-        }
-    }
-
-    private fun scheduleContextRefresh() {
-        contextRefreshFuture?.cancel(false)
-        if (!started.get() || config.deviceId == null || lastContext.get() == null) return
-        val delayMillis = maxOf(1_000L, (config.contextTtlSeconds * 500.0).toLong())
-        contextRefreshFuture = scheduler.schedule({
-            if (started.get() && helloReady.get()) {
-                lastContext.get()?.let { sendContext(it, arrival = null) }
-            }
-            scheduleContextRefresh()
-        }, delayMillis, TimeUnit.MILLISECONDS)
-    }
-
     private fun handleDisconnected(
         generation: Long,
         webSocket: WebSocket,
@@ -1201,7 +999,7 @@ class FastVoiceClient @JvmOverloads constructor(
             if (!socket.compareAndSet(webSocket, null)) return@runIfCurrent
             helloReady.set(false)
             fallbackPromptGate.resetSession()
-            cancelLocalFallback(restoreServerState = false)
+            cancelLocalFallback()
             audio.setWakeArmed(false)
             audio.setUplinkEnabled(false)
             audio.interruptPlayback()
@@ -1212,8 +1010,6 @@ class FastVoiceClient @JvmOverloads constructor(
     }
 
     private fun clearConnectionScopedState() {
-        commandProtocolEnabled.set(false)
-        legacyPlaybackOpen.set(false)
         synchronized(playbackControlLock) {
             clearAnyLocalCommandPrePauseLocked()
             playbackGeneration.set(-1)
@@ -1223,11 +1019,7 @@ class FastVoiceClient @JvmOverloads constructor(
             serverPlaybackPaused.set(false)
         }
         turnErrorUplinkState.reset()
-        promptDoneType.set(null)
-        resumeUplinkAfterPlayback.set(false)
         audio.setPromptPlayback(false)
-        inFlightArrivalContexts.clear()
-        arrivalEventIds.clear()
     }
 
     private fun observeServerAudio() {
@@ -1235,7 +1027,7 @@ class FastVoiceClient @JvmOverloads constructor(
         if (transition.action == FallbackPromptGate.Action.STOP_LOCAL ||
             localFallbackActive.get()
         ) {
-            cancelLocalFallback(restoreServerState = false)
+            cancelLocalFallback()
         }
     }
 
@@ -1244,7 +1036,7 @@ class FastVoiceClient @JvmOverloads constructor(
         if (transition.action == FallbackPromptGate.Action.STOP_LOCAL ||
             localFallbackActive.get()
         ) {
-            cancelLocalFallback(restoreServerState = false)
+            cancelLocalFallback()
         }
     }
 
@@ -1255,7 +1047,7 @@ class FastVoiceClient @JvmOverloads constructor(
             applyTurnErrorFinalState(finalState)
             return
         }
-        cancelLocalFallback(restoreServerState = false)
+        cancelLocalFallback()
         val generation = localFallbackGeneration.incrementAndGet()
         localFallbackActive.set(true)
         audio.interruptPlayback()
@@ -1286,29 +1078,12 @@ class FastVoiceClient @JvmOverloads constructor(
         }
     }
 
-    private fun cancelLocalFallback(restoreServerState: Boolean) {
+    private fun cancelLocalFallback() {
         localFallbackGeneration.incrementAndGet()
         val wasActive = localFallbackActive.getAndSet(false)
         fallbackPromptPlayer?.stop()
         if (wasActive) {
             audio.setPromptPlayback(false)
-            if (restoreServerState) restoreAudioForServerState()
-        }
-    }
-
-    private fun restoreAudioForServerState() {
-        if (!started.get() || !helloReady.get()) return
-        when (latestServerState.get()) {
-            FastVoiceState.SLEEPING.value -> {
-                audio.setUplinkEnabled(false)
-                audio.setWakeArmed(
-                    config.wakeEnabled && wakeWords.get().isNotEmpty(),
-                )
-            }
-            FastVoiceState.LISTENING.value -> {
-                audio.setWakeArmed(false)
-                audio.setUplinkEnabled(true)
-            }
         }
     }
 
@@ -1323,7 +1098,7 @@ class FastVoiceClient @JvmOverloads constructor(
     }
 
     private fun requireTrustedDevice(code: String): Boolean {
-        if (config.deviceId != null && versions != null) return true
+        if (config.deviceId != null) return true
         emitError(code = code)
         return false
     }
@@ -1391,8 +1166,6 @@ class FastVoiceClient @JvmOverloads constructor(
         private var routeAudioToSpeaker = true
         private var logger: FastVoiceLogger? = null
         private var listener: FastVoiceListener = FastVoiceListenerAdapter()
-        private var contextTtlSeconds = FastVoiceConfig.DEFAULT_TTL_SECONDS
-        private var arrivalTtlSeconds = FastVoiceConfig.DEFAULT_TTL_SECONDS
         private var localFallbackPromptEnabled = true
 
         fun endpoint(endpoint: String) = apply { this.endpoint = endpoint }
@@ -1425,10 +1198,6 @@ class FastVoiceClient @JvmOverloads constructor(
 
         fun listener(listener: FastVoiceListener) = apply { this.listener = listener }
 
-        fun contextTtlSeconds(seconds: Double) = apply { contextTtlSeconds = seconds }
-
-        fun arrivalTtlSeconds(seconds: Double) = apply { arrivalTtlSeconds = seconds }
-
         fun localFallbackPromptEnabled(enabled: Boolean) = apply {
             localFallbackPromptEnabled = enabled
         }
@@ -1445,8 +1214,6 @@ class FastVoiceClient @JvmOverloads constructor(
                 allowInsecureConnection = allowInsecureConnection,
                 routeAudioToSpeaker = routeAudioToSpeaker,
                 logger = logger,
-                contextTtlSeconds = contextTtlSeconds,
-                arrivalTtlSeconds = arrivalTtlSeconds,
                 localFallbackPromptEnabled = localFallbackPromptEnabled,
             )
             return FastVoiceClient(context, config, listener)
@@ -1467,3 +1234,26 @@ class FastVoiceClient @JvmOverloads constructor(
 
 private fun JSONObject.nullableString(name: String): String? =
     takeIf { has(name) && !isNull(name) }?.optString(name)
+
+private fun JSONObject.strictString(name: String): String? = opt(name) as? String
+
+private fun JSONObject.strictBoolean(name: String): Boolean? = opt(name) as? Boolean
+
+private fun JSONObject.strictLong(name: String): Long? {
+    val value = opt(name) as? Number ?: return null
+    val number = value.toLong()
+    return number.takeIf { value.toDouble().isFinite() && it.toDouble() == value.toDouble() }
+}
+
+private fun JSONObject.strictInt(name: String): Int? = strictLong(name)?.takeIf {
+    it in Int.MIN_VALUE.toLong()..Int.MAX_VALUE.toLong()
+}?.toInt()
+
+private fun JSONObject.strictStringList(name: String): List<String>? {
+    val array = optJSONArray(name) ?: return null
+    val values = ArrayList<String>(array.length())
+    for (index in 0 until array.length()) {
+        values += array.opt(index) as? String ?: return null
+    }
+    return values
+}

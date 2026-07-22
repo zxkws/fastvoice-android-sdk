@@ -2,7 +2,9 @@
 
 FastVoice Android SDK 把录音、离线唤醒、Opus 编解码、WebSocket、播放、打断、重连和协议细节收进一个 Android Library。业务 App 只负责申请麦克风权限、提供设备凭证、监听原始事件，以及原样转发车辆平台已签名的可信上下文或到点消息。
 
-当前版本仅包含 `arm64-v8a` 原生库，最低支持 Android 7.0（API 24）。
+当前版本仅包含 `arm64-v8a` 原生库，最低支持 Android 7.0（API 24）。SDK 只支持
+当前服务端协议：Opus 音频、`commands-v1` 控制和服务端裁决的本地控制词；服务端
+协商结果不满足这些条件时会报告 `unsupported_server_protocol` 并结束连接，不做旧协议降级。
 
 ## 安装
 
@@ -23,7 +25,7 @@ dependencyResolutionManagement {
 
 ```kotlin
 dependencies {
-    implementation("com.github.zxkws:fastvoice-android-sdk:0.2.0")
+    implementation("com.github.zxkws:fastvoice-android-sdk:0.3.0")
 }
 ```
 
@@ -127,8 +129,6 @@ client.close()
 ## 上下文与到点事件
 
 上下文用于让服务端知道车辆当前所在园区、路线、景点或站点。游客的自然语言不能直接改写这些字段。车辆平台生成完整 `context_update` 或 `spot_arrival`，对除 `auth` 外的确定性 JSON 做 HMAC-SHA256 签名，再把完整原文交给 `sendTrustedMessage()`。SDK 只校验消息类型、当前 `device_id` 和签名字段形状，不验 HMAC、不重新序列化、不自动重试；服务端仍负责验签以及设备权限、字段白名单、版本、时效和路线归属。
-
-`updateContext()` 和 `reportArrival()` 仅为旧的无签名服务端保留二进制/源码兼容，已标记过时；当前服务端会拒绝这两个方法生成的无 `auth` 消息。
 
 示例 App 的已签名 JSON 输入框只用于联调，不能照搬到游客可操作的生产页面。
 

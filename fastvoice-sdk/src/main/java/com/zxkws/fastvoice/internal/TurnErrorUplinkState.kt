@@ -16,6 +16,5 @@ internal class TurnErrorUplinkState {
     }
 
     @Synchronized
-    fun afterTerminal(commandProtocol: Boolean, legacyListening: Boolean): Boolean =
-        if (commandProtocol) serverRequested else legacyListening
+    fun afterTerminal(): Boolean = serverRequested
 }

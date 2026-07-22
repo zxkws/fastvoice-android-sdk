@@ -56,14 +56,6 @@ class ClientProtocolPoliciesTest {
     }
 
     @Test
-    fun commandsV1StatesAreDisplayOnlyButLegacyStatesStillDriveTransport() {
-        assertFalse(ServerStateSideEffectPolicy.appliesLegacySleepingSideEffects(true, "sleeping"))
-        assertTrue(ServerStateSideEffectPolicy.appliesLegacySleepingSideEffects(false, "sleeping"))
-        assertFalse(ServerStateSideEffectPolicy.appliesLegacyListeningSideEffects(true, "listening"))
-        assertTrue(ServerStateSideEffectPolicy.appliesLegacyListeningSideEffects(false, "listening"))
-    }
-
-    @Test
     fun localCandidateRejectAndTimeoutReleaseOnlyTheirOwnHold() {
         val state = LocalCommandPrePauseState()
         assertTrue(state.begin("lc1", 7, 20))
@@ -129,9 +121,9 @@ class ClientProtocolPoliciesTest {
     fun turnErrorPromptCompletionUsesLatestServerUplinkRequest() {
         val state = TurnErrorUplinkState()
         assertFalse(state.onServerCommand(true, localPromptPlaying = true))
-        assertTrue(state.afterTerminal(commandProtocol = true, legacyListening = false))
+        assertTrue(state.afterTerminal())
         assertFalse(state.onServerCommand(false, localPromptPlaying = true))
-        assertFalse(state.afterTerminal(commandProtocol = true, legacyListening = true))
+        assertFalse(state.afterTerminal())
     }
 
     @Test

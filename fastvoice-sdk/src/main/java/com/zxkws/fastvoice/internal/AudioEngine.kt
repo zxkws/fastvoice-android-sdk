@@ -480,12 +480,21 @@ internal class AudioEngine(
         return resumedSuccessfully
     }
 
-    /** Replays the most recently completed server audio without another TTS request. */
+    /** Replays the current response from its beginning, or the last completed response when idle. */
     fun replayPlayback(serverGeneration: Int): Boolean {
         synchronized(playbackControlLock) {
-            val replay = synchronized(playbackCacheLock) { lastPlaybackCache.toList() }
-            if (!active.get() || replay.isEmpty()) return false
+            val currentGenerationActive = playbackAccepting.get() &&
+                serverPlaybackGeneration.get() >= 0
+            val replay = synchronized(playbackCacheLock) {
+                ReplayCachePolicy.select(
+                    currentGenerationActive = currentGenerationActive,
+                    current = currentPlaybackCache,
+                    pending = pendingPlaybackCache,
+                    lastCompleted = lastPlaybackCache,
+                ).toList()
+            }
             interruptPlaybackLocked()
+            if (!active.get() || replay.isEmpty()) return false
             serverPlaybackGeneration.set(serverGeneration)
             playbackAccepting.set(true)
             val epoch = playbackEpoch.incrementAndGet()

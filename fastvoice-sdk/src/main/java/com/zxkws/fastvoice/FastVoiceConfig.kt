@@ -72,8 +72,6 @@ class FastVoiceConfig @JvmOverloads constructor(
     val allowInsecureConnection: Boolean = false,
     val routeAudioToSpeaker: Boolean = true,
     val logger: FastVoiceLogger? = null,
-    val contextTtlSeconds: Double = DEFAULT_TTL_SECONDS,
-    val arrivalTtlSeconds: Double = DEFAULT_TTL_SECONDS,
     val localFallbackPromptEnabled: Boolean = true,
 ) {
     val preferredWakeWords: List<String> =
@@ -91,12 +89,6 @@ class FastVoiceConfig @JvmOverloads constructor(
             "deviceId and tokenProvider must be configured together"
         }
         deviceId?.let(::requireDeviceId)
-        require(contextTtlSeconds.isFinite() && contextTtlSeconds > 0.0) {
-            "contextTtlSeconds must be a positive finite number"
-        }
-        require(arrivalTtlSeconds.isFinite() && arrivalTtlSeconds > 0.0) {
-            "arrivalTtlSeconds must be a positive finite number"
-        }
     }
 
     /** Kotlin-friendly constructor for fixed device credentials. */
@@ -111,8 +103,6 @@ class FastVoiceConfig @JvmOverloads constructor(
         allowInsecureConnection: Boolean = false,
         routeAudioToSpeaker: Boolean = true,
         logger: FastVoiceLogger? = null,
-        contextTtlSeconds: Double = DEFAULT_TTL_SECONDS,
-        arrivalTtlSeconds: Double = DEFAULT_TTL_SECONDS,
         localFallbackPromptEnabled: Boolean = true,
     ) : this(
         endpoint = endpoint,
@@ -125,8 +115,6 @@ class FastVoiceConfig @JvmOverloads constructor(
         allowInsecureConnection = allowInsecureConnection,
         routeAudioToSpeaker = routeAudioToSpeaker,
         logger = logger,
-        contextTtlSeconds = contextTtlSeconds,
-        arrivalTtlSeconds = arrivalTtlSeconds,
         localFallbackPromptEnabled = localFallbackPromptEnabled,
     )
 
@@ -157,10 +145,6 @@ class FastVoiceConfig @JvmOverloads constructor(
         append(routeAudioToSpeaker)
         append(", logger=")
         append(if (logger == null) "null" else "[configured]")
-        append(", contextTtlSeconds=")
-        append(contextTtlSeconds)
-        append(", arrivalTtlSeconds=")
-        append(arrivalTtlSeconds)
         append(", localFallbackPromptEnabled=")
         append(localFallbackPromptEnabled)
         append(')')
@@ -176,8 +160,6 @@ class FastVoiceConfig @JvmOverloads constructor(
         private var allowInsecureConnection: Boolean = false
         private var routeAudioToSpeaker: Boolean = true
         private var logger: FastVoiceLogger? = null
-        private var contextTtlSeconds: Double = DEFAULT_TTL_SECONDS
-        private var arrivalTtlSeconds: Double = DEFAULT_TTL_SECONDS
         private var localFallbackPromptEnabled: Boolean = true
 
         fun device(
@@ -209,10 +191,6 @@ class FastVoiceConfig @JvmOverloads constructor(
 
         fun logger(logger: FastVoiceLogger?) = apply { this.logger = logger }
 
-        fun contextTtlSeconds(seconds: Double) = apply { contextTtlSeconds = seconds }
-
-        fun arrivalTtlSeconds(seconds: Double) = apply { arrivalTtlSeconds = seconds }
-
         fun localFallbackPromptEnabled(enabled: Boolean) = apply {
             localFallbackPromptEnabled = enabled
         }
@@ -228,15 +206,11 @@ class FastVoiceConfig @JvmOverloads constructor(
             allowInsecureConnection = allowInsecureConnection,
             routeAudioToSpeaker = routeAudioToSpeaker,
             logger = logger,
-            contextTtlSeconds = contextTtlSeconds,
-            arrivalTtlSeconds = arrivalTtlSeconds,
             localFallbackPromptEnabled = localFallbackPromptEnabled,
         )
     }
 
     companion object {
-        const val DEFAULT_TTL_SECONDS: Double = 60.0
-
         @JvmStatic
         fun builder(endpoint: String): Builder = Builder(endpoint)
     }

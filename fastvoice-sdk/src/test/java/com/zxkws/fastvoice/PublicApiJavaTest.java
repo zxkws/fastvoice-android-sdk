@@ -16,12 +16,6 @@ public class PublicApiJavaTest {
             .localFallbackPromptEnabled(false)
             .preferredWakeWords(Arrays.asList("布丁", "你好布丁"))
             .build();
-        VehicleContext context = VehicleContext.builder()
-            .parkId("park-1")
-            .operationStatus(VehicleContext.STATUS_ARRIVED)
-            .batteryPercent(80.0)
-            .build();
-        SpotArrival arrival = new SpotArrival("park-1", "route-a", "station-3", "spot-3");
         FastVoiceListener listener = new FastVoiceListenerAdapter() {
             @Override
             public void onStateChanged(FastVoiceState state) {
@@ -35,8 +29,6 @@ public class PublicApiJavaTest {
         };
 
         assertEquals("rover-1", config.getDeviceId());
-        assertEquals("park-1", context.getParkId());
-        assertEquals("spot-3", arrival.getSpotId());
         assertEquals(
             boolean.class,
             FastVoiceClient.class.getMethod("sendTrustedMessage", String.class).getReturnType()

@@ -1,34 +1,14 @@
 package com.zxkws.fastvoice.internal
 
 import com.zxkws.fastvoice.FastVoiceConfig
-import com.zxkws.fastvoice.SpotArrival
-import com.zxkws.fastvoice.VehicleContext
-import java.util.UUID
 
 /** Owns the wire field names so they never leak into the host application's integration code. */
 internal object ProtocolEncoder {
-    private const val INPUT_RATE = 16_000
-    private const val OUTPUT_RATE = 48_000
-    private const val FRAME_MS = 20
-    private val promptDoneTypes = setOf("wake_prompt_done", "spot_prompt_done")
-    private val controlActions = listOf(
-        "playback.begin",
-        "playback.end",
-        "playback.stop",
-        "playback.pause",
-        "playback.resume",
-        "playback.replay",
-        "playback.skip",
-        "audio.volume.adjust",
-        "uplink.start",
-        "uplink.stop",
-    )
-
     /**
      * Encodes the initial capability negotiation.
      *
-     * The host app does not implement the control protocol. The SDK advertises and consumes it so
-     * server-side playback and volume intents can evolve without changing application code.
+     * The host app does not implement the control protocol. The SDK advertises the exact current
+     * contract and rejects a server that negotiates anything else.
      */
     @JvmSynthetic
     fun hello(config: FastVoiceConfig, supportedWakeWords: Collection<String>): String {
@@ -36,24 +16,20 @@ internal object ProtocolEncoder {
         val wake = linkedMapOf<String, Any?>(
             "enabled" to config.wakeEnabled,
         )
-        if (wakeWords.isNotEmpty()) {
-            // `word` keeps compatibility with older servers; `words` is the current capability set.
-            wake["word"] = wakeWords.first()
-        }
         wake["words"] = wakeWords
 
         val message = linkedMapOf<String, Any?>(
             "type" to "hello",
             "audio" to linkedMapOf(
                 "encoding" to "opus",
-                "input_rate" to INPUT_RATE,
-                "output_rate" to OUTPUT_RATE,
-                "frame_ms" to FRAME_MS,
+                "input_rate" to CurrentProtocol.INPUT_RATE,
+                "output_rate" to CurrentProtocol.OUTPUT_RATE,
+                "frame_ms" to CurrentProtocol.FRAME_MS,
             ),
             "wake" to wake,
             "control" to linkedMapOf(
                 "protocol" to "commands-v1",
-                "actions" to controlActions,
+                "actions" to CurrentProtocol.CONTROL_ACTIONS,
             ),
         )
         config.deviceId?.let { deviceId ->
@@ -131,68 +107,6 @@ internal object ProtocolEncoder {
         )
     }
 
-    /** Keeps the vehicle platform's signed bytes intact; re-encoding would invalidate its HMAC. */
-    @JvmSynthetic
-    fun trustedMessage(rawJson: String): String {
-        require(rawJson.isNotBlank()) { "trusted message must not be blank" }
-        return rawJson
-    }
-
-    @JvmSynthetic
-    fun promptDone(type: String): String {
-        require(type in promptDoneTypes) { "unsupported prompt completion type: $type" }
-        return JsonEncoder.encode(linkedMapOf("type" to type))
-    }
-
-    @JvmSynthetic
-    fun contextUpdate(
-        config: FastVoiceConfig,
-        context: VehicleContext,
-        version: Long,
-        timestampSeconds: Double,
-    ): String {
-        require(version >= 0L) { "version must be non-negative" }
-        require(timestampSeconds.isFinite()) { "timestampSeconds must be finite" }
-        val deviceId = requireNotNull(config.deviceId) { "device credentials are required" }
-        return JsonEncoder.encode(
-            linkedMapOf(
-                "type" to "context_update",
-                "device_id" to deviceId,
-                "version" to version,
-                "timestamp" to timestampSeconds,
-                "ttl_seconds" to config.contextTtlSeconds,
-                "context" to context.toProtocolMap(),
-            ),
-        )
-    }
-
-    @JvmSynthetic
-    fun spotArrival(
-        config: FastVoiceConfig,
-        arrival: SpotArrival,
-        version: Long,
-        timestampSeconds: Double,
-        eventId: String = UUID.randomUUID().toString(),
-    ): String {
-        require(version >= 0L) { "version must be non-negative" }
-        require(timestampSeconds.isFinite()) { "timestampSeconds must be finite" }
-        val deviceId = requireNotNull(config.deviceId) { "device credentials are required" }
-        return JsonEncoder.encode(
-            linkedMapOf(
-                "type" to "spot_arrival",
-                "device_id" to deviceId,
-                "event_id" to eventId,
-                "version" to version,
-                "timestamp" to timestampSeconds,
-                "ttl_seconds" to config.arrivalTtlSeconds,
-                "park_id" to arrival.parkId,
-                "route_id" to arrival.routeId,
-                "station_id" to arrival.stationId,
-                "spot_id" to arrival.spotId,
-            ),
-        )
-    }
-
     private fun selectedWakeWords(
         config: FastVoiceConfig,
         supportedWakeWords: Collection<String>,
@@ -216,27 +130,6 @@ internal object ProtocolEncoder {
         return selected
     }
 }
-
-private fun VehicleContext.toProtocolMap(): Map<String, Any?> =
-    linkedMapOf<String, Any?>().apply {
-        parkId?.let { put("park_id", it) }
-        routeId?.let { put("route_id", it) }
-        currentSpotId?.let { put("current_spot_id", it) }
-        currentStationId?.let { put("current_station_id", it) }
-        nextStationId?.let { put("next_station_id", it) }
-        destinationId?.let { put("destination_id", it) }
-        vehicleName?.let { put("vehicle_name", it) }
-        currentLocation?.let { put("current_location", it) }
-        routeName?.let { put("route_name", it) }
-        destination?.let { put("destination", it) }
-        nextStop?.let { put("next_stop", it) }
-        operationStatus?.let { put("operation_status", it) }
-        speedMps?.let { put("speed_mps", it) }
-        batteryPercent?.let { put("battery_percent", it) }
-        passengerCount?.let { put("passenger_count", it) }
-        latitude?.let { put("latitude", it) }
-        longitude?.let { put("longitude", it) }
-    }
 
 /** Small dependency-free JSON writer so the codec remains usable in plain JVM unit tests. */
 private object JsonEncoder {
