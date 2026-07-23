@@ -146,6 +146,9 @@ public class AudioRuntimePoliciesTest {
         assertEquals(
                 LocalCommandSpotter.KeywordRoute.CONTROL,
                 LocalCommandSpotter.routeKeyword("退下", Collections.singleton("布丁")));
+        assertEquals(
+                LocalCommandSpotter.KeywordRoute.CONTROL,
+                LocalCommandSpotter.routeKeyword("继续", Collections.singleton("布丁")));
     }
 
     @Test

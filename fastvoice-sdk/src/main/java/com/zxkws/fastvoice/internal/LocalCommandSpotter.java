@@ -35,7 +35,7 @@ final class LocalCommandSpotter {
             "fastvoice/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01";
     private static final Set<String> CONTROL_WORDS = new LinkedHashSet<>(Arrays.asList(
             "换一个", "换个", "下一个", "停止", "停一下", "别说", "闭嘴", "等等", "打住", "重来",
-            "退下", "退下吧"));
+            "退下", "退下吧", "继续"));
     private KeywordSpotter spotter;
     private final ReplaceOnSuccess<OnlineStream> stream = new ReplaceOnSuccess<>();
     private final KeywordLineRegistry keywordLines = new KeywordLineRegistry();
@@ -67,7 +67,9 @@ final class LocalCommandSpotter {
                 DIR + "/tokens.txt", 1, false, "", "zipformer2", "", "");
         KeywordSpotterConfig config = new KeywordSpotterConfig(
                 new FeatureConfig(16000, 80, 0.0f), model, 4,
-                DIR + "/keywords.txt", 1.0f, 0.25f, 2);
+                // 两阶段协议会再由服务端 ASR 排除误触；这里优先提高真实外放环境下
+                // 的召回并缩短候选出现时间，避免短控制词到达时只剩尾音可供确认。
+                DIR + "/keywords.txt", 1.5f, 0.25f, 1);
         spotter = new KeywordSpotter(assets, config);
         loadKeywordLines(assets);
         configureWakeWords(wakeWords);

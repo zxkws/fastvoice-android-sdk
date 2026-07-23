@@ -25,7 +25,7 @@ dependencyResolutionManagement {
 
 ```kotlin
 dependencies {
-    implementation("com.github.zxkws:fastvoice-android-sdk:0.3.0")
+    implementation("com.github.zxkws:fastvoice-android-sdk:0.3.1")
 }
 ```
 
