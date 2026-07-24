@@ -15,10 +15,9 @@ import android.widget.TextView
 import com.zxkws.fastvoice.DeviceTokenProvider
 import com.zxkws.fastvoice.FastVoiceClient
 import com.zxkws.fastvoice.FastVoiceConfig
-import com.zxkws.fastvoice.FastVoiceError
 import com.zxkws.fastvoice.FastVoiceEvent
-import com.zxkws.fastvoice.FastVoiceListenerAdapter
-import com.zxkws.fastvoice.FastVoiceState
+import com.zxkws.fastvoice.FastVoiceListener
+import com.zxkws.fastvoice.OrderSnapshot
 
 /**
  * SDK 的最小接入示例页面。
@@ -29,59 +28,50 @@ class MainActivity : Activity() {
 
     private companion object {
         const val RECORD_AUDIO_REQUEST = 1001
+        const val SAMPLE_ORDER_ID = "sample-order"
     }
 
     private lateinit var endpointInput: EditText
     private lateinit var deviceIdInput: EditText
     private lateinit var tokenInput: EditText
-    private lateinit var trustedMessageInput: EditText
+    private lateinit var spotIdInput: EditText
 
     private lateinit var startButton: Button
     private lateinit var stopButton: Button
     private lateinit var interruptButton: Button
-    private lateinit var trustedMessageButton: Button
+    private lateinit var startOrderButton: Button
+    private lateinit var arrivalButton: Button
+    private lateinit var endOrderButton: Button
 
     private lateinit var stateValue: TextView
     private lateinit var asrValue: TextView
     private lateinit var replyValue: TextView
     private lateinit var errorValue: TextView
-    private lateinit var wakeWordsValue: TextView
-    private lateinit var contextResultValue: TextView
-    private lateinit var arrivalResultValue: TextView
+    private lateinit var orderResultValue: TextView
+    private lateinit var tourResultValue: TextView
+    private lateinit var playbackResultValue: TextView
 
     private var voiceClient: FastVoiceClient? = null
 
-    private val voiceListener = object : FastVoiceListenerAdapter() {
-        override fun onStateChanged(state: FastVoiceState) {
-            renderState(state.value)
-        }
-
-        override fun onAsr(text: String) {
-            renderAsr(text)
-        }
-
-        override fun onReplyDelta(text: String) {
-            renderReplyDelta(text)
-        }
-
-        override fun onError(error: FastVoiceError) {
-            renderError(error.code.orEmpty())
-        }
-
-        override fun onContextUpdated(event: FastVoiceEvent.ContextUpdated) {
-            runOnUiThread { contextResultValue.text = event.version.toString() }
-        }
-
-        override fun onArrivalAccepted(event: FastVoiceEvent.ArrivalAccepted) {
-            runOnUiThread { arrivalResultValue.text = event.eventId }
-        }
-
-        override fun onArrivalRejected(event: FastVoiceEvent.ArrivalRejected) {
-            runOnUiThread { arrivalResultValue.text = event.code.orEmpty() }
-        }
-
-        override fun onActiveWakeWords(words: List<String>) {
-            runOnUiThread { wakeWordsValue.text = words.toString() }
+    private val voiceListener = FastVoiceListener { event ->
+        when (event) {
+            is FastVoiceEvent.StateChanged -> renderState(event.state.value)
+            is FastVoiceEvent.Transcript -> {
+                if (event.role == "user") {
+                    renderAsr(event.text)
+                } else {
+                    renderReply(event.text)
+                }
+            }
+            is FastVoiceEvent.Error -> renderError(event.error.code.orEmpty())
+            is FastVoiceEvent.OrderAck ->
+                runOnUiThread { orderResultValue.text = event.action }
+            is FastVoiceEvent.TourAck ->
+                runOnUiThread { tourResultValue.text = event.id }
+            is FastVoiceEvent.PlaybackFinished ->
+                runOnUiThread { playbackResultValue.text = event.tourId.orEmpty() }
+            is FastVoiceEvent.PlaybackFailed ->
+                runOnUiThread { playbackResultValue.text = event.code }
         }
     }
 
@@ -96,7 +86,9 @@ class MainActivity : Activity() {
         startButton.setOnClickListener { startVoice() }
         stopButton.setOnClickListener { voiceClient?.stop() }
         interruptButton.setOnClickListener { voiceClient?.interrupt() }
-        trustedMessageButton.setOnClickListener { sendTrustedMessage() }
+        startOrderButton.setOnClickListener { startSampleOrder() }
+        arrivalButton.setOnClickListener { playSampleArrival() }
+        endOrderButton.setOnClickListener { voiceClient?.endOrder(SAMPLE_ORDER_ID, 2) }
     }
 
     private fun startVoice() {
@@ -112,17 +104,16 @@ class MainActivity : Activity() {
             renderError("endpoint is required")
             return
         }
-        if (deviceId.isBlank() != token.isBlank()) {
-            renderError("device id and token must be provided together")
+        if (deviceId.isBlank() || token.isBlank()) {
+            renderError("device id and token are required")
             return
         }
 
         try {
             val config = FastVoiceConfig(
                 endpoint = endpoint,
-                deviceId = deviceId.ifBlank { null },
-                tokenProvider = token.takeIf { it.isNotBlank() }
-                    ?.let { DeviceTokenProvider.fixed(it) },
+                deviceId = deviceId,
+                tokenProvider = DeviceTokenProvider.fixed(token),
                 allowInsecureConnection = endpoint.startsWith("ws://", ignoreCase = true),
                 bypassSystemProxy = endpoint.startsWith("ws://127.0.0.1", ignoreCase = true),
             )
@@ -134,8 +125,33 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun sendTrustedMessage() {
-        voiceClient?.sendTrustedMessage(trustedMessageInput.text.toString())
+    private fun startSampleOrder() {
+        val spotId = spotIdInput.text.toString().trim()
+        if (spotId.isBlank()) {
+            renderError("spot id is required")
+            return
+        }
+        voiceClient?.startOrder(
+            OrderSnapshot(
+                id = SAMPLE_ORDER_ID,
+                rev = 1,
+                context = mapOf("current_spot_id" to spotId),
+            ),
+        )
+    }
+
+    private fun playSampleArrival() {
+        val spotId = spotIdInput.text.toString().trim()
+        if (spotId.isBlank()) {
+            renderError("spot id is required")
+            return
+        }
+        voiceClient?.playArrival(
+            id = "sample-arrival",
+            orderId = SAMPLE_ORDER_ID,
+            orderRev = 1,
+            spotId = spotId,
+        )
     }
 
     private fun requestMicrophonePermissionIfNeeded() {
@@ -168,7 +184,7 @@ class MainActivity : Activity() {
         super.onStop()
     }
 
-    /** 以下方法不改写回调值；reply_delta 只按收到顺序直接追加。 */
+    /** 以下方法直接展示回调原值。 */
     private fun renderState(rawValue: String) {
         runOnUiThread { stateValue.text = rawValue }
     }
@@ -177,8 +193,8 @@ class MainActivity : Activity() {
         runOnUiThread { asrValue.text = rawValue }
     }
 
-    private fun renderReplyDelta(rawValue: String) {
-        runOnUiThread { replyValue.append(rawValue) }
+    private fun renderReply(rawValue: String) {
+        runOnUiThread { replyValue.text = rawValue }
     }
 
     private fun renderError(rawValue: String) {
@@ -198,25 +214,22 @@ class MainActivity : Activity() {
         tokenInput = input("device token (test only)").apply {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
         }
-        trustedMessageInput = input("vehicle-platform-signed JSON").apply {
-            isSingleLine = false
-            minLines = 3
-            gravity = Gravity.TOP
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
-        }
+        spotIdInput = input("spot id")
 
         startButton = button("Start")
         stopButton = button("Stop")
         interruptButton = button("Interrupt")
-        trustedMessageButton = button("Send signed message")
+        startOrderButton = button("Start order")
+        arrivalButton = button("Arrival")
+        endOrderButton = button("End order")
 
         stateValue = output()
         asrValue = output()
         replyValue = output()
         errorValue = output()
-        wakeWordsValue = output()
-        contextResultValue = output()
-        arrivalResultValue = output()
+        orderResultValue = output()
+        tourResultValue = output()
+        playbackResultValue = output()
 
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -229,16 +242,16 @@ class MainActivity : Activity() {
             addView(label("Token"))
             addView(tokenInput)
             addView(buttonRow(startButton, stopButton, interruptButton))
-            addView(label("Signed context / arrival JSON (test only)"))
-            addView(trustedMessageInput)
-            addView(trustedMessageButton)
+            addView(label("Spot ID"))
+            addView(spotIdInput)
+            addView(buttonRow(startOrderButton, arrivalButton, endOrderButton))
             addView(rawOutput("state", stateValue, gap))
             addView(rawOutput("asr", asrValue, gap))
             addView(rawOutput("reply", replyValue, gap))
             addView(rawOutput("error", errorValue, gap))
-            addView(rawOutput("activeWakeWords", wakeWordsValue, gap))
-            addView(rawOutput("contextResult", contextResultValue, gap))
-            addView(rawOutput("arrivalResult", arrivalResultValue, gap))
+            addView(rawOutput("orderResult", orderResultValue, gap))
+            addView(rawOutput("tourResult", tourResultValue, gap))
+            addView(rawOutput("playbackResult", playbackResultValue, gap))
         }
 
         return ScrollView(this).apply { addView(content) }

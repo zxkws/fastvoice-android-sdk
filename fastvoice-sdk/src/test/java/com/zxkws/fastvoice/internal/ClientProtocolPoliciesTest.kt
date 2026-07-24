@@ -46,16 +46,6 @@ class ClientProtocolPoliciesTest {
     }
 
     @Test
-    fun playbackGenerationNeverRollsBackAndEndMustMatch() {
-        assertFalse(PlaybackCommandGenerationPolicy.acceptsReset(4, 5))
-        assertTrue(PlaybackCommandGenerationPolicy.acceptsReset(5, 5))
-        assertTrue(PlaybackCommandGenerationPolicy.acceptsReset(6, 5))
-        assertFalse(PlaybackCommandGenerationPolicy.acceptsEnd(4, 5))
-        assertTrue(PlaybackCommandGenerationPolicy.acceptsEnd(5, 5))
-        assertFalse(PlaybackCommandGenerationPolicy.acceptsEnd(6, 5))
-    }
-
-    @Test
     fun localCandidateRejectAndTimeoutReleaseOnlyTheirOwnHold() {
         val state = LocalCommandPrePauseState()
         assertTrue(state.begin("lc1", 7, 20))
@@ -118,18 +108,18 @@ class ClientProtocolPoliciesTest {
     }
 
     @Test
-    fun turnErrorPromptCompletionUsesLatestServerUplinkRequest() {
-        val state = TurnErrorUplinkState()
-        assertFalse(state.onServerCommand(true, localPromptPlaying = true))
-        assertTrue(state.afterTerminal())
-        assertFalse(state.onServerCommand(false, localPromptPlaying = true))
-        assertFalse(state.afterTerminal())
-    }
-
-    @Test
     fun localCommandTimeoutAddsGraceWithinAdvertisedBounds() {
         assertEquals(1_050, LocalCommandTimeoutPolicy.clientTimeoutMs(800))
         assertEquals(450, LocalCommandTimeoutPolicy.clientTimeoutMs(100))
         assertEquals(3_250, LocalCommandTimeoutPolicy.clientTimeoutMs(8_000))
+    }
+
+    @Test
+    fun playbackRequiresExactTwentyMillisecondFramesAndSomePhysicalAudio() {
+        assertTrue(PlaybackFramePolicy.acceptsDecodedFrame(960, 960))
+        assertFalse(PlaybackFramePolicy.acceptsDecodedFrame(0, 960))
+        assertFalse(PlaybackFramePolicy.acceptsDecodedFrame(1_920, 960))
+        assertFalse(PlaybackFramePolicy.canFinish(0))
+        assertTrue(PlaybackFramePolicy.canFinish(1_920))
     }
 }

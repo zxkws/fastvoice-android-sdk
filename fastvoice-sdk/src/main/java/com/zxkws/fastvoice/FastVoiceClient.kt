@@ -11,21 +11,13 @@ import com.zxkws.fastvoice.internal.AndroidTextToSpeechPromptPlayer
 import com.zxkws.fastvoice.internal.AudioEngine
 import com.zxkws.fastvoice.internal.ClientSessionEpoch
 import com.zxkws.fastvoice.internal.CurrentProtocol
-import com.zxkws.fastvoice.internal.FallbackPromptGate
 import com.zxkws.fastvoice.internal.FallbackPromptPlayer
 import com.zxkws.fastvoice.internal.LocalCommandPrePauseState
 import com.zxkws.fastvoice.internal.LocalCommandTimeoutPolicy
-import com.zxkws.fastvoice.internal.PlaybackCommandGenerationPolicy
+import com.zxkws.fastvoice.internal.OrderOperationState
 import com.zxkws.fastvoice.internal.PlaybackTerminalState
 import com.zxkws.fastvoice.internal.ProtocolEncoder
-import com.zxkws.fastvoice.internal.ServerHelloCapabilities
-import com.zxkws.fastvoice.internal.TurnErrorUplinkState
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.Response
-import okhttp3.WebSocket
-import okhttp3.WebSocketListener
-import okio.ByteString
+import com.zxkws.fastvoice.internal.ReadyMessage
 import java.io.Closeable
 import java.net.Proxy
 import java.util.Collections
@@ -36,57 +28,56 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import okio.ByteString
 import org.json.JSONObject
 
-private val TRUSTED_MESSAGE_TYPES = setOf("context_update", "spot_arrival")
-private val HMAC_SHA256_SIGNATURE = Regex("^[0-9a-fA-F]{64}$")
-private const val MAX_TRUSTED_MESSAGE_BYTES = 64 * 1024
-
 /**
- * The single public entry point for FastVoice audio, wake-up, transport, and trusted context.
+ * The single public entry point for the one FastVoice WebSocket protocol.
  *
- * Keep one instance for one foreground voice session. Calls to [start] and [stop] are idempotent;
- * [close] releases the client permanently.
+ * Keep one instance while the host owns foreground voice. [start] and [stop] are idempotent;
+ * [close] releases the instance permanently.
  */
 class FastVoiceClient @JvmOverloads constructor(
     context: Context,
     val config: FastVoiceConfig,
     private val listener: FastVoiceListener = FastVoiceListenerAdapter(),
 ) : Closeable {
-
-    private data class PendingPlaybackAck(
-        val commandId: String,
-        val generation: Int,
-    )
-
     private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
     private val started = AtomicBoolean(false)
     private val closed = AtomicBoolean(false)
-    private val protocolTerminationInProgress = AtomicBoolean(false)
-    private val helloReady = AtomicBoolean(false)
+    private val ready = AtomicBoolean(false)
     private val sessions = ClientSessionEpoch()
     private val reconnectAttempt = AtomicInteger(0)
     private val socket = AtomicReference<WebSocket?>(null)
     private val wakeWords = AtomicReference<List<String>>(emptyList())
-    private val playbackGeneration = AtomicInteger(-1)
+
+    private val playbackId = AtomicInteger(-1)
     private val playbackEpoch = AtomicLong(0)
-    private val pendingPlaybackAck = AtomicReference<PendingPlaybackAck?>(null)
-    private val playbackControlLock = Any()
     private val playbackTerminalState = PlaybackTerminalState()
     private val serverPlaybackPaused = AtomicBoolean(false)
+    private val playbackControlLock = Any()
+
     private val localCommandPrePauseState = LocalCommandPrePauseState()
     private val localCommandSequence = AtomicLong(0)
-    private var localCommandDecisionFuture: ScheduledFuture<*>? = null
+    private var localCommandTimeoutFuture: ScheduledFuture<*>? = null
     @Volatile
-    private var localCommandDecisionTimeoutMs =
-        LocalCommandTimeoutPolicy.clientTimeoutMs(
-            LocalCommandTimeoutPolicy.DEFAULT_SERVER_TIMEOUT_MS,
-        )
-    private val fallbackPromptGate = FallbackPromptGate()
-    private val turnErrorUplinkState = TurnErrorUplinkState()
+    private var localCommandTimeoutMs = LocalCommandTimeoutPolicy.clientTimeoutMs(
+        LocalCommandTimeoutPolicy.DEFAULT_SERVER_TIMEOUT_MS,
+    )
+
+    private val orderState = OrderOperationState()
+    private val orderSendLock = Any()
+    private var playbackTourId: String? = null
+
     private val localFallbackActive = AtomicBoolean(false)
     private val localFallbackGeneration = AtomicLong(0)
+    private var fallbackPromptPlayer: FallbackPromptPlayer? = null
 
     private val scheduler = Executors.newSingleThreadScheduledExecutor { runnable ->
         Thread(runnable, "fastvoice-scheduler").apply { isDaemon = true }
@@ -101,27 +92,14 @@ class FastVoiceClient @JvmOverloads constructor(
         .build()
 
     private lateinit var audio: AudioEngine
-    private var fallbackPromptPlayer: FallbackPromptPlayer? = null
-
-    init {
-        val unsupportedWakeWords = config.preferredWakeWords.filterNot {
-            it in AudioEngine.SUPPORTED_WAKE_WORDS
-        }
-        require(unsupportedWakeWords.isEmpty()) {
-            "preferredWakeWords unsupported by the local model: $unsupportedWakeWords"
-        }
-        audio = AudioEngine(
-            context = appContext,
-            routeToSpeaker = config.routeAudioToSpeaker,
-            callback = object : AudioEngine.Callback {
+    private val audioCallback = object : AudioEngine.Callback {
             override fun onWakeWord(word: String): Boolean {
                 val current = socket.get()
-                val sent = helloReady.get() && current != null &&
+                val sent = ready.get() && current != null &&
                     current.send(ProtocolEncoder.wake(word))
                 if (!sent) {
-                    audio.setUplinkEnabled(false)
-                    audio.setWakeArmed(helloReady.get() && wakeWords.get().isNotEmpty())
-                    emitError(code = "wake_send_failed")
+                    audio.setWakeArmed(canArmWake())
+                    emitLocalError("wake_send_failed")
                 }
                 return sent
             }
@@ -130,17 +108,24 @@ class FastVoiceClient @JvmOverloads constructor(
                 handleLocalCommandCandidate(generation, text)
             }
 
+            override fun onLocalPromptControl(text: String) {
+                if (!localFallbackActive.get()) return
+                cancelLocalFallback()
+                audio.setWakeArmed(canArmWake())
+                socket.get()?.takeIf { ready.get() }?.send(ProtocolEncoder.turnCancel())
+            }
+
             override fun onUplinkPacket(packet: ByteArray) {
-                socket.get()?.takeIf { helloReady.get() }?.send(ByteString.of(*packet))
+                socket.get()?.takeIf { ready.get() }?.send(ByteString.of(*packet))
             }
 
             override fun onPlaybackStarted() = Unit
 
             override fun onPlaybackProgress(generation: Int, playedMs: Long) {
-                if (generation != playbackGeneration.get()) return
+                if (generation != playbackId.get()) return
                 val epoch = playbackEpoch.get()
                 if (playbackTerminalState.failureReason(generation, epoch) != null) return
-                socket.get()?.takeIf { helloReady.get() }
+                socket.get()?.takeIf { ready.get() }
                     ?.send(ProtocolEncoder.playbackProgress(generation, playedMs))
             }
 
@@ -154,14 +139,26 @@ class FastVoiceClient @JvmOverloads constructor(
 
             override fun onDiagnostic(code: String, message: String, error: Throwable?) {
                 log(
-                    if (error == null) FastVoiceLogLevel.INFO else FastVoiceLogLevel.ERROR,
+                    if (error == null) FastVoiceLogLevel.WARN else FastVoiceLogLevel.ERROR,
                     "$code: $message",
                     error,
                 )
-                emitError(code = code, message = message.ifEmpty { null }, cause = error)
+                emitLocalError(code, message.ifEmpty { null }, error)
             }
-            },
+        }
+
+    init {
+        audio = AudioEngine(
+            context = appContext,
+            routeToSpeaker = config.routeAudioToSpeaker,
+            callback = audioCallback,
         )
+        val unsupportedWakeWords = config.preferredWakeWords.filterNot {
+            it in AudioEngine.SUPPORTED_WAKE_WORDS
+        }
+        require(unsupportedWakeWords.isEmpty()) {
+            "preferredWakeWords unsupported by the local model: $unsupportedWakeWords"
+        }
         if (config.localFallbackPromptEnabled) {
             fallbackPromptPlayer = AndroidTextToSpeechPromptPlayer(appContext) {
                     code, message, error ->
@@ -170,36 +167,31 @@ class FastVoiceClient @JvmOverloads constructor(
                     "$code: $message",
                     error,
                 )
-                emitError(code = code, message = message.ifEmpty { null }, cause = error)
+                emitLocalError(code, message.ifEmpty { null }, error)
             }
         }
     }
 
-    /** Whether this instance currently owns audio resources and is trying to stay connected. */
+    /** Whether this instance currently owns audio resources and reconnect work. */
     val isStarted: Boolean
         get() = started.get()
 
-    /** The exact server-selected/local-supported intersection from the latest hello response. */
+    /** Exact server-selected wake words supported and enabled by this client. */
     val activeWakeWords: List<String>
         get() = wakeWords.get()
 
-    /**
-     * Starts local audio and opens the WebSocket. Returns false when permission or audio setup is
-     * unavailable. Connection failures are reported asynchronously and automatically retried.
-     */
     @Synchronized
     fun start(): Boolean {
         check(!closed.get()) { "FastVoiceClient is closed" }
-        if (protocolTerminationInProgress.get()) return false
         if (started.get()) return true
         if (appContext.checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
             PackageManager.PERMISSION_GRANTED
         ) {
-            emitError(code = "microphone_permission_missing")
+            emitLocalError("microphone_permission_missing")
             return false
         }
         if (Build.SUPPORTED_ABIS.none { it == "arm64-v8a" }) {
-            emitError(code = "unsupported_abi", message = Build.SUPPORTED_ABIS.joinToString())
+            emitLocalError("unsupported_abi", Build.SUPPORTED_ABIS.joinToString())
             return false
         }
         if (!started.compareAndSet(false, true)) return true
@@ -207,85 +199,152 @@ class FastVoiceClient @JvmOverloads constructor(
             started.set(false)
             return false
         }
+        audio.setKwsSessionEnabled(false)
         audio.setWakeWords(selectedLocalWakeWords())
+        audio.setWakeArmed(false)
         connect(sessions.begin())
         return true
     }
 
-    /** Stops audio and reconnect work. The same instance may be started again. */
     @Synchronized
     fun stop() {
-        if (protocolTerminationInProgress.get()) return
         if (!started.compareAndSet(true, false)) return
         sessions.invalidate()
-        helloReady.set(false)
-        fallbackPromptGate.resetSession()
-        cancelLocalFallback()
-        audio.setWakeArmed(false)
+        synchronized(orderSendLock) {
+            ready.set(false)
+            orderState.markConnectionUnready()
+        }
         reconnectFuture?.cancel(false)
         reconnectFuture = null
+        cancelLocalFallback()
+        audio.setKwsSessionEnabled(false)
+        audio.setWakeArmed(false)
+        audio.stopCapture()
         socket.getAndSet(null)?.close(1_000, "client stop")
-        clearConnectionScopedState()
+        clearConnectionState()
         audio.stop()
     }
 
-    /** Immediately stops local playback and asks the server to cancel the active response. */
+    /** Stops local output immediately and cancels the current server turn. */
     fun interrupt() {
-        fallbackPromptGate.clear()
         cancelLocalFallback()
-        invalidateCurrentPlaybackState()
-        socket.get()?.takeIf { helloReady.get() }
-            ?.send(ProtocolEncoder.interrupt())
+        invalidatePlayback()
+        socket.get()?.takeIf { ready.get() }?.send(ProtocolEncoder.turnCancel())
     }
 
     /**
-     * Sends a vehicle-platform-signed `context_update` or `spot_arrival` JSON message unchanged.
+     * Starts one order. The snapshot is retained and resent as order.start after reconnect.
      *
-     * The SDK validates only the public envelope shape and device binding. It never signs the
-     * message, stores a signing key, or parses and reserializes the payload. The returned value
-     * means that the current WebSocket accepted the text for transmission; the server callback is
-     * still authoritative for signature verification and business acceptance.
+     * `true` means the SDK accepted the desired state, including while disconnected; only
+     * [FastVoiceEvent.OrderAck] means the server accepted it.
      */
-    fun sendTrustedMessage(rawJson: String): Boolean {
-        if (!requireTrustedDevice("trusted_message_credentials_required")) return false
-        if (rawJson.toByteArray(Charsets.UTF_8).size > MAX_TRUSTED_MESSAGE_BYTES) {
-            emitError(code = "trusted_message_too_large")
-            return false
+    fun startOrder(snapshot: OrderSnapshot): Boolean = synchronized(orderSendLock) {
+        val acceptance = orderState.start(snapshot)
+        if (!acceptance.accepted) {
+            emitLocalError(requireNotNull(acceptance.errorCode), acceptance.errorRef)
+            return@synchronized false
         }
-        val message = runCatching { JSONObject(rawJson) }.getOrElse { error ->
-            emitError(
-                code = "invalid_trusted_message_json",
-                message = error.message,
-                cause = error,
-            )
-            return false
+        if (!acceptance.exactRetry) {
+            syncKwsSession()
+            invalidatePlayback()
         }
-        if (message.optString("type") !in TRUSTED_MESSAGE_TYPES) {
-            emitError(code = "invalid_trusted_message_type")
-            return false
+        sendIfReady(ProtocolEncoder.orderStart(snapshot))
+        true
+    }
+
+    /**
+     * Replaces the complete context of the active order.
+     *
+     * `true` means accepted by the SDK. Delivery may wait for ready/reconnect.
+     */
+    fun updateOrder(snapshot: OrderSnapshot): Boolean = synchronized(orderSendLock) {
+        val acceptance = orderState.update(snapshot)
+        if (!acceptance.accepted) {
+            emitLocalError(requireNotNull(acceptance.errorCode), acceptance.errorRef)
+            return@synchronized false
         }
-        if (message.optString("device_id") != config.deviceId) {
-            emitError(code = "trusted_message_device_mismatch")
-            return false
+        sendIfReady(ProtocolEncoder.orderUpdate(snapshot))
+        true
+    }
+
+    /**
+     * Ends the active order. The request remains retryable across reconnect until order.ack.
+     *
+     * `true` means accepted by the SDK, not acknowledged by the server.
+     */
+    @JvmOverloads
+    fun endOrder(
+        id: String,
+        rev: Long,
+        reason: String = "completed",
+    ): Boolean = synchronized(orderSendLock) {
+        require(reason.isNotBlank()) { "order end reason must not be blank" }
+        val acceptance = orderState.end(id, rev, reason, audio.isUplinkEnabled())
+        if (!acceptance.accepted) {
+            emitLocalError(requireNotNull(acceptance.errorCode), acceptance.errorRef)
+            return@synchronized false
         }
-        val auth = message.optJSONObject("auth")
-        val signature = auth?.optString("signature").orEmpty()
-        if (auth == null || auth.length() != 2 ||
-            auth.optString("algorithm") != "hmac-sha256" ||
-            !HMAC_SHA256_SIGNATURE.matches(signature)
+        if (!acceptance.exactRetry) {
+            audio.stopCapture()
+            syncKwsSession()
+            invalidatePlayback()
+        }
+        sendIfReady(ProtocolEncoder.orderEnd(id, rev, reason))
+        true
+    }
+
+    /** Requests an arrival announcement bound to one exact active order snapshot. */
+    @JvmOverloads
+    fun playArrival(
+        id: String,
+        orderId: String,
+        orderRev: Long,
+        spotId: String,
+        content: String = "arrival_prompt",
+    ): Boolean = synchronized(orderSendLock) {
+        require(id.isNotBlank()) { "tour id must not be blank" }
+        require(orderId.isNotBlank()) { "orderId must not be blank" }
+        require(orderRev >= 0) { "orderRev must be non-negative" }
+        require(spotId.isNotBlank()) { "spotId must not be blank" }
+        require(content.isNotBlank()) { "tour content must not be blank" }
+        val order = orderState.desired()
+        if (order == null || order.id != orderId || order.rev != orderRev ||
+            order.context["current_spot_id"] != spotId
         ) {
-            emitError(code = "trusted_message_signature_required")
+            emitLocalError("arrival_order_mismatch", id)
+            return@synchronized false
+        }
+        sendTour(id, "arrival", content, orderId, orderRev, spotId)
+    }
+
+    /** Requests a fixed idle-cruise announcement while no order is active. */
+    fun playCruise(id: String, content: String): Boolean = synchronized(orderSendLock) {
+        require(id.isNotBlank()) { "tour id must not be blank" }
+        require(content.isNotBlank()) { "tour content must not be blank" }
+        if (orderState.hasDesiredOrder()) {
+            emitLocalError("cruise_order_active", id)
+            return@synchronized false
+        }
+        sendTour(id, "cruise", content, null, null, null)
+    }
+
+    private fun sendTour(
+        id: String,
+        source: String,
+        content: String,
+        orderId: String?,
+        orderRev: Long?,
+        spotId: String?,
+    ): Boolean {
+        val current = socket.get()?.takeIf { started.get() && ready.get() } ?: run {
+            emitLocalError("tour_transport_unavailable", id)
             return false
         }
-        // Signed messages carry timestamps and monotonic versions. Do not queue or replay one
-        // invisibly across connection setup/reconnect; the vehicle platform decides when to retry.
-        val current = socket.get()?.takeIf { started.get() && helloReady.get() }
-        if (current == null) {
-            emitError(code = "trusted_message_transport_unavailable")
-            return false
-        }
-        if (!current.send(rawJson)) {
-            emitError(code = "trusted_message_send_failed")
+        if (!current.send(
+                ProtocolEncoder.tourPlay(id, source, content, orderId, orderRev, spotId),
+            )
+        ) {
+            emitLocalError("tour_send_failed", id)
             return false
         }
         return true
@@ -302,495 +361,432 @@ class FastVoiceClient @JvmOverloads constructor(
         httpClient.connectionPool.evictAll()
     }
 
-    private fun connect(generation: Long) {
-        if (!started.get() || closed.get() || !sessions.isCurrent(generation)) return
-        val request = runCatching { Request.Builder().url(config.endpoint).build() }
-            .getOrElse {
-                emitError(code = "invalid_endpoint", message = it.message, cause = it)
-                started.set(false)
-                audio.stop()
-                return
-            }
+    private fun connect(session: Long) {
+        if (!started.get() || closed.get() || !sessions.isCurrent(session)) return
+        val request = runCatching {
+            Request.Builder()
+                .url(config.endpoint)
+                .apply {
+                    val deviceId = requireNotNull(config.deviceId)
+                    header("X-FastVoice-Device-Id", deviceId)
+                    header("Authorization", "Bearer ${config.requireDeviceToken()}")
+                }
+                .build()
+        }.getOrElse { error ->
+            emitLocalError("connection_configuration_invalid", error.message, error)
+            started.set(false)
+            audio.stop()
+            return
+        }
         log(FastVoiceLogLevel.INFO, "opening WebSocket")
-        val webSocket = httpClient.newWebSocket(request, SocketListener(generation))
-        var published = false
-        sessions.runIfCurrent(generation) {
-            if (started.get() && !closed.get()) {
+        val webSocket = httpClient.newWebSocket(request, SocketListener(session))
+        sessions.runIfCurrent(session) {
+            if (started.get()) {
                 socket.getAndSet(webSocket)?.cancel()
-                published = true
+            } else {
+                webSocket.cancel()
             }
         }
-        if (!published) webSocket.cancel()
     }
 
     private inner class SocketListener(
-        private val generation: Long,
+        private val session: Long,
     ) : WebSocketListener() {
         private val terminated = AtomicBoolean(false)
 
         override fun onOpen(webSocket: WebSocket, response: Response) {
             var current = false
-            sessions.runIfCurrent(generation) {
+            sessions.runIfCurrent(session) {
                 current = started.get() && socket.get() === webSocket
             }
             if (!current) {
                 webSocket.close(1_000, "stale connection")
                 return
             }
-            val hello = runCatching {
-                ProtocolEncoder.hello(config, AudioEngine.SUPPORTED_WAKE_WORDS)
-            }.getOrElse { error ->
-                emitError(
-                    code = "device_credentials_unavailable",
-                    message = error.message,
-                    cause = error,
-                )
-                webSocket.close(1_008, "credentials unavailable")
-                return
-            }
-            sessions.runIfCurrent(generation) {
-                if (started.get() && socket.get() === webSocket) webSocket.send(hello)
-            }
+            webSocket.send(ProtocolEncoder.hello(config.wakeEnabled))
         }
 
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-            val packet = bytes.toByteArray()
-            sessions.runIfCurrent(generation) {
-                if (started.get() && socket.get() === webSocket) {
-                    if (!helloReady.get()) {
-                        rejectServerHello()
-                        return@runIfCurrent
-                    }
-                    observeServerAudio()
-                    audio.enqueueOpus(packet)
+            sessions.runIfCurrent(session) {
+                if (!started.get() || socket.get() !== webSocket) return@runIfCurrent
+                if (!ready.get() || playbackId.get() < 0) {
+                    terminateProtocol("binary_before_playback")
+                    return@runIfCurrent
                 }
+                audio.enqueueOpus(bytes.toByteArray())
             }
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
             val parsed = runCatching { JSONObject(text) }
-            sessions.runIfCurrent(generation) {
+            sessions.runIfCurrent(session) {
                 if (!started.get() || socket.get() !== webSocket) return@runIfCurrent
                 parsed.fold(
                     onSuccess = ::handleServerMessage,
-                    onFailure = { error ->
-                        if (helloReady.get()) {
-                            emitError(
-                                code = "invalid_server_message",
-                                message = error.message,
-                                cause = error,
-                            )
-                        } else {
-                            rejectServerHello()
-                        }
-                    },
+                    onFailure = { terminateProtocol("invalid_server_json", it) },
                 )
             }
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             if (!terminated.compareAndSet(false, true)) return
-            handleDisconnected(
-                generation,
-                webSocket,
-                FastVoiceError(
-                    code = "connection_failed",
-                    message = t.message,
-                    cause = t,
-                ),
-            )
+            handleDisconnected(session, webSocket, "connection_failed", t.message, t)
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             if (!terminated.compareAndSet(false, true)) return
-            val error = if (started.get()) {
-                FastVoiceError(code = "connection_closed", message = reason.ifEmpty { code.toString() })
-            } else {
-                null
-            }
-            handleDisconnected(generation, webSocket, error)
+            handleDisconnected(
+                session,
+                webSocket,
+                if (started.get()) "connection_closed" else null,
+                reason.ifEmpty { code.toString() },
+                null,
+            )
         }
     }
 
     private fun handleServerMessage(message: JSONObject) {
         val type = message.strictString("type") ?: run {
-            rejectServerHello()
+            terminateProtocol("missing_message_type")
             return
         }
-        if (!helloReady.get() && !CurrentProtocol.acceptsBeforeHello(type)) {
-            rejectServerHello()
+        if (!ready.get() && !CurrentProtocol.acceptsBeforeReady(type)) {
+            terminateProtocol("message_before_ready")
             return
         }
-        if (type == "hello") {
-            if (helloReady.get()) rejectServerHello() else handleHello(message)
+        if (type == "ready") {
+            if (ready.get()) terminateProtocol("duplicate_ready") else handleReady(message)
             return
         }
         when (type) {
-            "state" -> handleState(message.optString("value"))
-            "wake_ack" -> handleWakeAcknowledgement(message)
-            "spot_arrival_prompt" -> {
-                clearTurnErrorFallback()
-                handleServerPrompt(message)
-            }
-            "asr" -> {
-                clearTurnErrorFallback()
-                emit(FastVoiceEvent.Asr(message.optString("text")))
-            }
-            "reply_delta" -> emit(FastVoiceEvent.ReplyDelta(message.optString("text")))
-            "command" -> handleCommand(message)
-            "turn_error" -> {
-                val transition = if (config.localFallbackPromptEnabled) {
-                    fallbackPromptGate.onTurnError(
-                        message.nullableString("recovery_id"),
-                        message.nullableString("prompt"),
-                    )
-                } else {
-                    fallbackPromptGate.clear()
-                }
-                if (transition.action == FallbackPromptGate.Action.STOP_LOCAL) {
-                    cancelLocalFallback()
-                }
-                emitError(
-                    code = message.nullableString("code"),
-                    message = message.nullableString("message"),
-                    prompt = message.nullableString("prompt"),
-                )
-            }
-            "turn_error_terminal" -> handleTurnErrorTerminal(message)
-            "local_command_decision" -> handleLocalCommandDecision(message)
-            "context_updated" -> handleContextUpdated(message)
-            "context_error" -> handleContextError(message)
-            "arrival_accepted" -> handleArrivalAccepted(message)
-            "arrival_error" -> handleArrivalError(message)
+            "state" -> handleState(message)
+            "transcript" -> handleTranscript(message)
+            "order.ack" -> handleOrderAck(message)
+            "tour.ack" -> handleTourAck(message)
+            "playback.start" -> handlePlaybackStart(message)
+            "playback.end" -> handlePlaybackEnd(message)
+            "control" -> handleControl(message)
+            "control.decision" -> handleControlDecision(message)
+            "error" -> handleError(message)
+            else -> terminateProtocol("unsupported_server_message")
         }
     }
 
-    private fun handleHello(message: JSONObject) {
-        val control = message.optJSONObject("control")
-        val audioConfig = message.optJSONObject("audio")
-        val localCommand = message.optJSONObject("local_command")
-        val wake = message.optJSONObject("wake")
-        val capabilities = ServerHelloCapabilities(
-            encoding = audioConfig?.strictString("encoding"),
-            inputRate = audioConfig?.strictLong("input_rate"),
-            outputRate = audioConfig?.strictLong("output_rate"),
-            frameMs = audioConfig?.strictLong("frame_ms"),
-            wakeEnabled = wake?.strictBoolean("enabled"),
-            wakeWords = wake?.strictStringList("words"),
-            controlEnabled = control?.strictBoolean("enabled"),
-            controlProtocol = control?.strictString("protocol"),
-            controlActions = control?.strictStringList("actions"),
-            localCommandEnabled = localCommand?.strictBoolean("enabled"),
-            candidateMessage = localCommand?.strictString("candidate_message"),
-            decisionMessage = localCommand?.strictString("decision_message"),
-            confirmTimeoutMs = localCommand?.strictLong("confirm_timeout_ms"),
-            generationBound = localCommand?.strictBoolean("generation_bound"),
-        )
-        if (!CurrentProtocol.acceptsHello(capabilities, AudioEngine.SUPPORTED_WAKE_WORDS)) {
-            rejectServerHello()
+    private fun handleReady(message: JSONObject) {
+        if (!CurrentProtocol.acceptsReadyFields(message.keys().asSequence().toSet())) {
+            terminateProtocol("invalid_ready")
             return
         }
-        localCommandDecisionTimeoutMs = LocalCommandTimeoutPolicy.clientTimeoutMs(
-            requireNotNull(capabilities.confirmTimeoutMs),
+        val readyMessage = ReadyMessage(
+            connectionId = message.strictString("connection_id"),
+            wakeWords = message.strictStringList("wake_words"),
+            controlTimeoutMs = message.strictLong("control_timeout_ms"),
         )
-        val negotiated = linkedSetOf<String>()
-        negotiated.addAll(requireNotNull(capabilities.wakeWords))
-        val active = if (capabilities.wakeEnabled == true) {
-            negotiated.filterTo(linkedSetOf()) { it in AudioEngine.SUPPORTED_WAKE_WORDS }
-        } else {
-            linkedSetOf()
+        if (!CurrentProtocol.acceptsReady(readyMessage, AudioEngine.SUPPORTED_WAKE_WORDS)) {
+            terminateProtocol("invalid_ready")
+            return
         }
+        localCommandTimeoutMs = LocalCommandTimeoutPolicy.clientTimeoutMs(
+            requireNotNull(readyMessage.controlTimeoutMs),
+        )
+        val allowed = selectedLocalWakeWords().toSet()
+        val active = requireNotNull(readyMessage.wakeWords).filter { it in allowed }
         val immutable = Collections.unmodifiableList(ArrayList(active))
         wakeWords.set(immutable)
         audio.setWakeWords(active)
-        helloReady.set(true)
-        reconnectAttempt.set(0)
-        emit(FastVoiceEvent.ActiveWakeWords(immutable))
-
-        wake?.nullableString("error")?.let { emitError(code = it) }
-        message.optJSONObject("context")?.nullableString("error")?.let {
-            emitError(code = it)
-        }
-
-    }
-
-    private fun rejectServerHello() {
-        if (!protocolTerminationInProgress.compareAndSet(false, true)) return
-        try {
-            emitError(code = "unsupported_server_protocol")
-            started.set(false)
-            helloReady.set(false)
-            sessions.invalidate()
-            fallbackPromptGate.resetSession()
-            cancelLocalFallback()
-            reconnectFuture?.cancel(false)
-            reconnectFuture = null
-            audio.setWakeArmed(false)
-            audio.setUplinkEnabled(false)
-            socket.getAndSet(null)?.close(1_002, "commands-v1 with opus is required")
-            clearConnectionScopedState()
-            audio.stop()
-        } finally {
-            protocolTerminationInProgress.set(false)
+        synchronized(orderSendLock) {
+            ready.set(true)
+            reconnectAttempt.set(0)
+            orderState.prepareConnectionStart()?.let {
+                sendIfReady(ProtocolEncoder.orderStart(it))
+            }
         }
     }
 
-    private fun handleState(rawValue: String) {
-        if (rawValue == FastVoiceState.RECOGNIZING.value) clearTurnErrorFallback()
-        emit(FastVoiceEvent.StateChanged(FastVoiceState.fromRaw(rawValue)))
-    }
-
-    private fun handleWakeAcknowledgement(message: JSONObject) {
-        clearTurnErrorFallback()
-        if (!message.optBoolean("awaiting_command")) return
-        if (message.optString("audio") == "server") {
-            handleServerPrompt(message)
-        } else {
-            emitError(code = "unsupported_wake_prompt_audio")
-        }
-    }
-
-    private fun handleServerPrompt(message: JSONObject) {
-        if (message.optString("audio") != "server") return
-        audio.setWakeArmed(false)
-        audio.setPromptPlayback(true)
-        audio.setUplinkEnabled(false)
-    }
-
-    private fun handleCommand(message: JSONObject) {
-        val commandId = message.strictString("id")?.takeIf(String::isNotBlank) ?: return
-        val action = message.strictString("action")?.takeIf(String::isNotBlank) ?: return
-        val ack = message.strictBoolean("ack") ?: return
-        val generation = message.strictInt("gen") ?: if (action in CurrentProtocol.PLAYBACK_ACTIONS) {
+    private fun handleState(message: JSONObject) {
+        val value = message.strictString("value")
+        if (value == null || value !in CurrentProtocol.STATE_VALUES) {
+            terminateProtocol("invalid_state")
             return
-        } else {
-            playbackGeneration.get()
         }
-        var applied = true
-        var ackAfterPlayback = false
+        emit(FastVoiceEvent.StateChanged(FastVoiceState.fromRaw(value)))
+    }
 
-        when (action) {
-            "uplink.start" -> {
-                audio.setWakeArmed(false)
-                audio.setUplinkEnabled(
-                    turnErrorUplinkState.onServerCommand(
-                        enabled = true,
-                        localPromptPlaying = localFallbackActive.get(),
-                    ),
-                )
+    private fun handleTranscript(message: JSONObject) {
+        val role = message.strictString("role")
+        val text = message.strictString("text")
+        val final = message.strictBoolean("final")
+        if (role !in setOf("user", "assistant") || text == null || final == null) {
+            terminateProtocol("invalid_transcript")
+            return
+        }
+        if (role == "assistant") cancelLocalFallback()
+        emit(FastVoiceEvent.Transcript(requireNotNull(role), text, final))
+    }
+
+    private fun handleOrderAck(message: JSONObject) {
+        val action = message.strictString("action")
+        val id = message.strictString("id")
+        val rev = message.strictLong("rev")
+        if (action !in setOf("start", "update", "end") || id.isNullOrBlank() ||
+            rev == null || rev < 0L
+        ) {
+            terminateProtocol("invalid_order_ack")
+            return
+        }
+        val effect = synchronized(orderSendLock) {
+            orderState.acknowledge(requireNotNull(action), id, rev).also {
+                it.pendingEnd?.let { end ->
+                    sendIfReady(ProtocolEncoder.orderEnd(end.id, end.rev, end.reason))
+                }
             }
-            "uplink.stop" -> {
-                audio.setUplinkEnabled(
-                    turnErrorUplinkState.onServerCommand(
-                        enabled = false,
-                        localPromptPlaying = localFallbackActive.get(),
-                    ),
-                )
-                audio.setWakeArmed(
-                    config.wakeEnabled && helloReady.get() && wakeWords.get().isNotEmpty(),
-                )
-            }
-            "playback.begin" -> {
-                synchronized(playbackControlLock) {
-                    if (!PlaybackCommandGenerationPolicy.acceptsReset(
-                            generation,
-                            playbackGeneration.get(),
-                        )
-                    ) {
-                        applied = false
-                    } else {
-                        clearAnyLocalCommandPrePauseLocked()
-                        playbackGeneration.set(generation)
-                        val epoch = playbackEpoch.incrementAndGet()
-                        playbackTerminalState.begin(generation, epoch)
-                        pendingPlaybackAck.set(null)
-                        serverPlaybackPaused.set(false)
-                        audio.beginPlayback(generation)
+        }
+        if (!effect.matched) {
+            log(FastVoiceLogLevel.WARN, "ignored stale order acknowledgement")
+            return
+        }
+        if (effect.ended) {
+            audio.stopCapture()
+            syncKwsSession()
+            audio.setWakeArmed(false)
+        } else if (effect.startAccepted) {
+            syncKwsSession()
+            audio.setWakeArmed(canArmWake())
+        }
+        emit(FastVoiceEvent.OrderAck(requireNotNull(action), id, rev))
+    }
+
+    private fun handleTourAck(message: JSONObject) {
+        val id = message.strictString("id")
+        if (id.isNullOrBlank()) {
+            terminateProtocol("invalid_tour_ack")
+            return
+        }
+        emit(FastVoiceEvent.TourAck(id))
+    }
+
+    private fun handlePlaybackStart(message: JSONObject) {
+        val id = message.strictInt("id")
+        val kind = message.strictString("kind")
+        val tourId = when {
+            !message.has("tour_id") -> null
+            message.isNull("tour_id") -> ""
+            else -> message.strictString("tour_id")?.takeIf(String::isNotBlank)
+        }
+        if (id == null || id < 0 || kind.isNullOrBlank() || tourId == null) {
+            terminateProtocol("invalid_playback_start")
+            return
+        }
+        cancelLocalFallback()
+        synchronized(playbackControlLock) {
+            clearLocalCommandPrePauseLocked(resume = false)
+            playbackId.set(id)
+            playbackTourId = tourId.takeIf(String::isNotEmpty)
+            val epoch = playbackEpoch.incrementAndGet()
+            playbackTerminalState.begin(id, epoch)
+            serverPlaybackPaused.set(false)
+            audio.setPromptPlayback(true)
+            audio.setWakeArmed(false)
+            audio.beginPlayback(id)
+        }
+    }
+
+    private fun handlePlaybackEnd(message: JSONObject) {
+        val id = message.strictInt("id")
+        if (id == null || id != playbackId.get()) return
+        val epoch = playbackEpoch.get()
+        if (playbackTerminalState.failureReason(id, epoch) == null) audio.endPlayback()
+    }
+
+    private fun handleControl(message: JSONObject) {
+        val commandId = message.strictString("id")
+        val action = message.strictString("action")
+        if (commandId.isNullOrBlank() || action.isNullOrBlank()) {
+            terminateProtocol("invalid_control")
+            return
+        }
+        var code: String? = null
+        val applied = when (action) {
+            "capture.start" -> {
+                val preRollMs = message.strictInt("pre_roll_ms")
+                if (!isOrderCaptureAllowed()) {
+                    code = "order_inactive"
+                    false
+                } else if (preRollMs == null || preRollMs < 0) {
+                    code = "invalid_pre_roll"
+                    false
+                } else {
+                    audio.setWakeArmed(false)
+                    audio.startCapture(preRollMs).also {
+                        if (!it) code = "capture_unavailable"
                     }
                 }
             }
-            "playback.end" -> {
-                var resumePrePause = false
-                var failureReason: String? = null
-                synchronized(playbackControlLock) {
-                    if (!PlaybackCommandGenerationPolicy.acceptsEnd(
-                            generation,
-                            playbackGeneration.get(),
-                        )
-                    ) {
-                        applied = false
-                    } else {
-                        val epoch = playbackEpoch.get()
-                        resumePrePause = clearLocalCommandPrePauseLocked(resume = true)
-                        failureReason = playbackTerminalState.failureReason(generation, epoch)
-                        ackAfterPlayback = ack
-                        if (failureReason == null && ackAfterPlayback && commandId.isNotBlank()) {
-                            pendingPlaybackAck.set(PendingPlaybackAck(commandId, generation))
-                        } else {
-                            pendingPlaybackAck.set(null)
-                        }
-                    }
-                }
-                if (resumePrePause) audio.resumePlayback(generation)
-                if (applied) {
-                    if (failureReason != null) {
-                        socket.get()?.takeIf { helloReady.get() }?.send(
-                            ProtocolEncoder.playbackFailed(
-                                generation,
-                                failureReason!!,
-                                commandId.takeIf { it.isNotBlank() },
-                            ),
-                        )
-                    } else {
-                        audio.endPlayback()
-                    }
-                }
+            "capture.stop" -> {
+                audio.stopCapture()
+                audio.setWakeArmed(canArmWake())
+                true
             }
-            "playback.stop", "playback.skip" -> {
-                synchronized(playbackControlLock) {
-                    if (!PlaybackCommandGenerationPolicy.acceptsReset(
-                            generation,
-                            playbackGeneration.get(),
-                        )
-                    ) {
-                        applied = false
-                    } else {
-                        clearAnyLocalCommandPrePauseLocked()
-                        playbackGeneration.set(generation)
-                        val epoch = playbackEpoch.incrementAndGet()
-                        playbackTerminalState.invalidate(generation, epoch)
-                        pendingPlaybackAck.set(null)
-                        serverPlaybackPaused.set(false)
-                        audio.setPromptPlayback(false)
-                        if (action == "playback.stop") {
-                            audio.interruptPlayback()
-                        } else {
-                            audio.skipPlayback()
-                        }
-                    }
-                }
-            }
-            "playback.pause" -> {
-                synchronized(playbackControlLock) {
-                    if (generation != playbackGeneration.get()) {
-                        applied = false
-                    } else {
-                        serverPlaybackPaused.set(true)
-                        clearLocalCommandPrePauseLocked(resume = false)
-                        applied = audio.pausePlayback(generation)
-                    }
-                }
-            }
-            "playback.resume" -> {
-                synchronized(playbackControlLock) {
-                    if (generation != playbackGeneration.get()) {
-                        applied = false
-                    } else {
-                        serverPlaybackPaused.set(false)
-                        clearLocalCommandPrePauseLocked(resume = false)
-                        applied = audio.resumePlayback(generation)
-                    }
-                }
-            }
-            "playback.replay" -> {
-                synchronized(playbackControlLock) {
-                    if (!PlaybackCommandGenerationPolicy.acceptsReset(
-                            generation,
-                            playbackGeneration.get(),
-                        )
-                    ) {
-                        applied = false
-                    } else {
-                        clearAnyLocalCommandPrePauseLocked()
-                        playbackGeneration.set(generation)
-                        val epoch = playbackEpoch.incrementAndGet()
-                        playbackTerminalState.begin(generation, epoch)
-                        pendingPlaybackAck.set(null)
-                        serverPlaybackPaused.set(false)
-                        applied = audio.replayPlayback(generation)
-                    }
-                }
-                if (!applied && generation == playbackGeneration.get()) {
-                    handlePlaybackFailed(generation, "replay unavailable")
-                }
-            }
-            "audio.volume.adjust" -> {
+            "playback.stop" -> applyPlaybackStop(message)
+                .also { if (!it) code = "stale_playback" }
+            "playback.pause" -> applyPlaybackPause(message)
+                .also { if (!it) code = "playback_pause_failed" }
+            "playback.resume" -> applyPlaybackResume(message)
+                .also { if (!it) code = "playback_resume_failed" }
+            "volume.up", "volume.down" -> {
                 synchronized(playbackControlLock) {
                     val resume = clearLocalCommandPrePauseLocked(resume = true)
-                    if (resume) applied = audio.resumePlayback(generation)
+                    if (resume) audio.resumePlayback(playbackId.get())
                 }
-                val direction = when (message.optString("direction")) {
-                    "up" -> AudioManager.ADJUST_RAISE
-                    "down" -> AudioManager.ADJUST_LOWER
-                    else -> 0
+                val direction = if (action == "volume.up") {
+                    AudioManager.ADJUST_RAISE
+                } else {
+                    AudioManager.ADJUST_LOWER
                 }
-                if (applied) applied = audio.adjustPlaybackVolume(direction)
+                audio.adjustPlaybackVolume(direction).also {
+                    if (!it) code = "volume_adjust_failed"
+                }
             }
             else -> {
-                applied = false
-                log(FastVoiceLogLevel.INFO, "ignored unsupported server action: $action")
+                code = "unsupported_action"
+                false
             }
         }
+        socket.get()?.takeIf { ready.get() }
+            ?.send(ProtocolEncoder.controlResult(commandId, applied, code))
+    }
 
-        if (!applied) {
-            log(FastVoiceLogLevel.INFO, "server action was not applicable: $action")
-        }
-        if (applied && ack && !ackAfterPlayback) {
-            socket.get()?.takeIf { helloReady.get() }
-                ?.send(ProtocolEncoder.commandAck(commandId))
+    private fun applyPlaybackStop(message: JSONObject): Boolean {
+        val target = message.strictInt("playback_id") ?: return false
+        synchronized(playbackControlLock) {
+            if (playbackId.get() < 0 && localFallbackActive.get()) {
+                cancelLocalFallback()
+                audio.setWakeArmed(canArmWake())
+                return true
+            }
+            if (target != playbackId.get()) return false
+            clearLocalCommandPrePauseLocked(resume = false)
+            val epoch = playbackEpoch.incrementAndGet()
+            playbackTerminalState.invalidate(target, epoch)
+            playbackId.set(-1)
+            playbackTourId = null
+            serverPlaybackPaused.set(false)
+            audio.interruptPlayback()
+            audio.setPromptPlayback(false)
+            audio.setWakeArmed(canArmWake())
+            return true
         }
     }
 
-    private fun handleLocalCommandCandidate(generation: Int, text: String) {
-        if (!helloReady.get() || generation != playbackGeneration.get()) {
-            audio.resumePlayback(generation)
+    private fun applyPlaybackPause(message: JSONObject): Boolean {
+        val target = message.strictInt("playback_id") ?: return false
+        synchronized(playbackControlLock) {
+            if (target != playbackId.get()) return false
+            serverPlaybackPaused.set(true)
+            clearLocalCommandPrePauseLocked(resume = false)
+            return audio.pausePlayback(target)
+        }
+    }
+
+    private fun applyPlaybackResume(message: JSONObject): Boolean {
+        val target = message.strictInt("playback_id") ?: return false
+        synchronized(playbackControlLock) {
+            if (target != playbackId.get()) return false
+            serverPlaybackPaused.set(false)
+            clearLocalCommandPrePauseLocked(resume = false)
+            return audio.resumePlayback(target)
+        }
+    }
+
+    private fun handleControlDecision(message: JSONObject) {
+        val id = message.strictString("id")
+        val accepted = message.strictBoolean("accepted")
+        if (id.isNullOrBlank() || accepted == null) {
+            terminateProtocol("invalid_control_decision")
+            return
+        }
+        applyLocalCommandDecision(id, accepted)
+    }
+
+    private fun handleError(message: JSONObject) {
+        val scope = message.strictString("scope")
+        val code = message.strictString("code")
+        val recoverable = message.strictBoolean("recoverable")
+        val rev = message.strictLong("rev")
+        if (scope.isNullOrBlank() || code.isNullOrBlank() || recoverable == null ||
+            (scope == "order" && (rev == null || rev < 0L))
+        ) {
+            terminateProtocol("invalid_error")
+            return
+        }
+        if (scope == "order") {
+            val effect = synchronized(orderSendLock) {
+                orderState.fail(message.nullableString("ref"), requireNotNull(rev))
+            }
+            if (effect.matchedCurrent) {
+                syncKwsSession()
+                if (effect.restoreOrderAudio && effect.restoreCapture) {
+                    audio.setWakeArmed(false)
+                    audio.startCapture(0)
+                } else {
+                    audio.setWakeArmed(canArmWake())
+                }
+            }
+        }
+        val error = FastVoiceError(
+            scope = scope,
+            ref = message.nullableString("ref"),
+            rev = rev,
+            code = code,
+            message = message.nullableString("message"),
+            recoverable = recoverable,
+            fallbackText = message.nullableString("fallback_text"),
+        )
+        emit(FastVoiceEvent.Error(error))
+        error.fallbackText?.let(::startLocalFallback)
+    }
+
+    private fun handleLocalCommandCandidate(playback: Int, name: String) {
+        if (!ready.get() || playback != playbackId.get()) {
+            audio.resumePlayback(playback)
             return
         }
         val candidateId: String
         val epoch: Long
         synchronized(playbackControlLock) {
             epoch = playbackEpoch.get()
-            if (playbackTerminalState.failureReason(generation, epoch) != null) {
-                audio.resumePlayback(generation)
+            if (playbackTerminalState.failureReason(playback, epoch) != null) {
+                audio.resumePlayback(playback)
                 return
             }
             candidateId = "lc-${localCommandSequence.incrementAndGet()}"
-            if (!localCommandPrePauseState.begin(candidateId, generation, epoch)) return
+            if (!localCommandPrePauseState.begin(candidateId, playback, epoch)) return
             armLocalCommandTimeoutLocked(
                 candidateId,
-                generation,
+                playback,
                 epoch,
                 requireAccepted = false,
-                localCommandDecisionTimeoutMs,
+                timeoutMs = localCommandTimeoutMs,
             )
         }
-        val sent = socket.get()?.takeIf { helloReady.get() }?.send(
-            ProtocolEncoder.localCommandCandidate(candidateId, text, generation),
+        val sent = socket.get()?.takeIf { ready.get() }?.send(
+            ProtocolEncoder.controlCandidate(candidateId, playback, name),
         ) == true
-        if (!sent) applyLocalCommandDecision(candidateId, generation, "rejected")
+        if (!sent) applyLocalCommandDecision(candidateId, accepted = false)
     }
 
-    private fun handleLocalCommandDecision(message: JSONObject) {
-        val id = message.optString("id")
-        val rawGeneration = message.opt("gen")
-        val generation = (rawGeneration as? Number)?.toLong()?.takeIf {
-            it in Int.MIN_VALUE.toLong()..Int.MAX_VALUE.toLong()
-        }?.toInt() ?: return
-        val decision = message.optString("decision")
-        if (id.isEmpty() || decision != "accepted" && decision != "rejected") return
-        applyLocalCommandDecision(id, generation, decision)
-    }
-
-    private fun applyLocalCommandDecision(id: String, generation: Int, decision: String) {
+    private fun applyLocalCommandDecision(id: String, accepted: Boolean) {
         var resume = false
         synchronized(playbackControlLock) {
+            val currentPlayback = playbackId.get()
             val epoch = playbackEpoch.get()
+            val decision = if (accepted) "accepted" else "rejected"
             when (
                 localCommandPrePauseState.decide(
                     id,
-                    generation,
+                    currentPlayback,
                     decision,
-                    playbackGeneration.get(),
+                    currentPlayback,
                     epoch,
                     serverPlaybackPaused.get(),
                 )
@@ -800,353 +796,272 @@ class FastVoiceClient @JvmOverloads constructor(
                     cancelLocalCommandTimeoutLocked()
                     armLocalCommandTimeoutLocked(
                         id,
-                        generation,
+                        currentPlayback,
                         epoch,
                         requireAccepted = true,
-                        LocalCommandTimeoutPolicy.ACCEPTED_ACTION_TIMEOUT_MS,
+                        timeoutMs = LocalCommandTimeoutPolicy.ACCEPTED_ACTION_TIMEOUT_MS,
                     )
                 }
                 LocalCommandPrePauseState.Outcome.RESUME -> {
                     cancelLocalCommandTimeoutLocked()
                     resume = true
                 }
-                LocalCommandPrePauseState.Outcome.CLEARED -> {
-                    cancelLocalCommandTimeoutLocked()
-                }
+                LocalCommandPrePauseState.Outcome.CLEARED -> cancelLocalCommandTimeoutLocked()
             }
         }
-        if (resume) audio.resumePlayback(generation)
+        if (resume) audio.resumePlayback(playbackId.get())
     }
 
     private fun armLocalCommandTimeoutLocked(
         id: String,
-        generation: Int,
+        playback: Int,
         epoch: Long,
         requireAccepted: Boolean,
-        delayMs: Long,
+        timeoutMs: Long,
     ) {
         cancelLocalCommandTimeoutLocked()
-        localCommandDecisionFuture = scheduler.schedule({
+        localCommandTimeoutFuture = scheduler.schedule({
             var resume = false
             synchronized(playbackControlLock) {
-                val outcome = localCommandPrePauseState.timeout(
-                    id,
-                    generation,
-                    epoch,
-                    playbackGeneration.get(),
-                    playbackEpoch.get(),
-                    serverPlaybackPaused.get(),
-                    requireAccepted,
-                )
-                if (outcome != LocalCommandPrePauseState.Outcome.IGNORED) {
-                    localCommandDecisionFuture = null
-                    resume = outcome == LocalCommandPrePauseState.Outcome.RESUME
+                when (
+                    localCommandPrePauseState.timeout(
+                        id,
+                        playback,
+                        epoch,
+                        playbackId.get(),
+                        playbackEpoch.get(),
+                        serverPlaybackPaused.get(),
+                        requireAccepted,
+                    )
+                ) {
+                    LocalCommandPrePauseState.Outcome.RESUME -> resume = true
+                    else -> Unit
                 }
+                localCommandTimeoutFuture = null
             }
-            if (resume) audio.resumePlayback(generation)
-        }, delayMs, TimeUnit.MILLISECONDS)
+            if (resume) audio.resumePlayback(playback)
+        }, timeoutMs, TimeUnit.MILLISECONDS)
     }
 
     private fun cancelLocalCommandTimeoutLocked() {
-        localCommandDecisionFuture?.cancel(false)
-        localCommandDecisionFuture = null
+        localCommandTimeoutFuture?.cancel(false)
+        localCommandTimeoutFuture = null
     }
 
-    /** Caller must hold [playbackControlLock]. */
     private fun clearLocalCommandPrePauseLocked(resume: Boolean): Boolean {
-        val generation = playbackGeneration.get()
-        val epoch = playbackEpoch.get()
-        val cleared = localCommandPrePauseState.clearIfCurrent(generation, epoch)
-        if (cleared) cancelLocalCommandTimeoutLocked()
+        cancelLocalCommandTimeoutLocked()
+        val cleared = localCommandPrePauseState.clear()
         return cleared && resume && !serverPlaybackPaused.get()
     }
 
-    /** Caller must hold [playbackControlLock]. */
-    private fun clearAnyLocalCommandPrePauseLocked() {
-        if (localCommandPrePauseState.clear()) cancelLocalCommandTimeoutLocked()
-    }
-
-    private fun invalidateCurrentPlaybackState() {
+    private fun handlePlaybackFinished(id: Int) {
+        var finished = false
+        var tourId: String? = null
         synchronized(playbackControlLock) {
-            val generation = playbackGeneration.get()
-            clearAnyLocalCommandPrePauseLocked()
-            val epoch = playbackEpoch.incrementAndGet()
-            playbackTerminalState.invalidate(generation, epoch)
-            pendingPlaybackAck.set(null)
-            serverPlaybackPaused.set(false)
-            audio.interruptPlayback()
-            audio.setPromptPlayback(false)
-        }
-    }
-
-    private fun handlePlaybackFinished(generation: Int) {
-        val current = socket.get()?.takeIf { helloReady.get() }
-        val pendingAck: PendingPlaybackAck?
-        synchronized(playbackControlLock) {
-            if (generation != playbackGeneration.get() ||
-                !playbackTerminalState.finish(generation, playbackEpoch.get())
-            ) return
-            pendingAck = pendingPlaybackAck.getAndSet(null)?.takeIf {
-                it.generation == generation
-            }
-            clearLocalCommandPrePauseLocked(resume = false)
-        }
-        if (current?.send(ProtocolEncoder.playbackFinished(generation)) == true) {
-            pendingAck?.let { current.send(ProtocolEncoder.commandAck(it.commandId)) }
-        }
-        audio.setPromptPlayback(false)
-    }
-
-    private fun handlePlaybackFailed(generation: Int, reason: String) {
-        val failureReason: String
-        val pendingAck: PendingPlaybackAck?
-        synchronized(playbackControlLock) {
-            if (generation != playbackGeneration.get()) return
             val epoch = playbackEpoch.get()
-            val result = playbackTerminalState.fail(generation, epoch, reason)
-            if (result != PlaybackTerminalState.FailureResult.RECORDED) return
-            failureReason = playbackTerminalState.failureReason(generation, epoch) ?: return
-            pendingAck = pendingPlaybackAck.getAndSet(null)?.takeIf {
-                it.generation == generation
-            }
-            clearLocalCommandPrePauseLocked(resume = false)
-        }
-        audio.setPromptPlayback(false)
-        socket.get()?.takeIf { helloReady.get() }?.send(
-            ProtocolEncoder.playbackFailed(
-                generation,
-                failureReason,
-                pendingAck?.commandId,
-            ),
-        )
-    }
-
-    private fun handleTurnErrorTerminal(message: JSONObject) {
-        val recoveryId = message.optString("recovery_id")
-        val rawAudioStarted = message.opt("server_audio_started")
-        val finalState = message.optString("final_state")
-        if (recoveryId.isEmpty() || rawAudioStarted !is Boolean ||
-            finalState != FastVoiceState.SLEEPING.value &&
-            finalState != FastVoiceState.LISTENING.value
-        ) return
-        val transition = fallbackPromptGate.onTerminal(
-            recoveryId,
-            rawAudioStarted,
-            finalState,
-        )
-        when (transition.action) {
-            FallbackPromptGate.Action.NONE -> Unit
-            FallbackPromptGate.Action.STOP_LOCAL -> {
-                cancelLocalFallback()
-                applyTurnErrorFinalState(finalState)
-            }
-            FallbackPromptGate.Action.APPLY_FINAL_STATE -> {
-                applyTurnErrorFinalState(finalState)
-            }
-            FallbackPromptGate.Action.PLAY_LOCAL -> {
-                startLocalFallback(
-                    requireNotNull(transition.recoveryId),
-                    requireNotNull(transition.prompt),
-                    requireNotNull(transition.finalState),
-                )
-            }
-        }
-    }
-
-    private fun applyTurnErrorFinalState(finalState: String) {
-        val uplink = turnErrorUplinkState.afterTerminal()
-        audio.setUplinkEnabled(uplink)
-        audio.setWakeArmed(
-            !uplink && finalState == FastVoiceState.SLEEPING.value &&
-                config.wakeEnabled && helloReady.get() && wakeWords.get().isNotEmpty(),
-        )
-    }
-
-    private fun handleContextUpdated(message: JSONObject) {
-        emit(FastVoiceEvent.ContextUpdated(message.optLong("version", -1L)))
-    }
-
-    private fun handleContextError(message: JSONObject) {
-        val code = message.nullableString("code")
-        val errorMessage = message.nullableString("message")
-        emitError(code = code, message = errorMessage)
-    }
-
-    private fun handleArrivalAccepted(message: JSONObject) {
-        val eventId = message.optString("event_id")
-        emit(
-            FastVoiceEvent.ArrivalAccepted(
-                eventId = eventId,
-                version = message.optLong("version", -1L),
-                spotId = message.optString("spot_id"),
-            ),
-        )
-    }
-
-    private fun handleArrivalError(message: JSONObject) {
-        val code = message.nullableString("code")
-        val errorMessage = message.nullableString("message")
-        emit(FastVoiceEvent.ArrivalRejected(code, errorMessage))
-        emitError(code = code, message = errorMessage)
-    }
-
-    private fun handleDisconnected(
-        generation: Long,
-        webSocket: WebSocket,
-        error: FastVoiceError?,
-    ) {
-        sessions.runIfCurrent(generation) {
-            if (!socket.compareAndSet(webSocket, null)) return@runIfCurrent
-            helloReady.set(false)
-            fallbackPromptGate.resetSession()
-            cancelLocalFallback()
-            audio.setWakeArmed(false)
-            audio.setUplinkEnabled(false)
-            audio.interruptPlayback()
-            clearConnectionScopedState()
-            error?.let { emit(FastVoiceEvent.Error(it)) }
-            scheduleReconnect(generation)
-        }
-    }
-
-    private fun clearConnectionScopedState() {
-        synchronized(playbackControlLock) {
-            clearAnyLocalCommandPrePauseLocked()
-            playbackGeneration.set(-1)
-            val epoch = playbackEpoch.incrementAndGet()
-            playbackTerminalState.invalidate(-1, epoch)
-            pendingPlaybackAck.set(null)
-            serverPlaybackPaused.set(false)
-        }
-        turnErrorUplinkState.reset()
-        audio.setPromptPlayback(false)
-    }
-
-    private fun observeServerAudio() {
-        val transition = fallbackPromptGate.onServerAudio()
-        if (transition.action == FallbackPromptGate.Action.STOP_LOCAL ||
-            localFallbackActive.get()
-        ) {
-            cancelLocalFallback()
-        }
-    }
-
-    private fun clearTurnErrorFallback() {
-        val transition = fallbackPromptGate.clear()
-        if (transition.action == FallbackPromptGate.Action.STOP_LOCAL ||
-            localFallbackActive.get()
-        ) {
-            cancelLocalFallback()
-        }
-    }
-
-    private fun startLocalFallback(recoveryId: String, prompt: String, finalState: String) {
-        val player = fallbackPromptPlayer
-        if (player == null) {
-            fallbackPromptGate.finishLocal(recoveryId)
-            applyTurnErrorFinalState(finalState)
-            return
-        }
-        cancelLocalFallback()
-        val generation = localFallbackGeneration.incrementAndGet()
-        localFallbackActive.set(true)
-        audio.interruptPlayback()
-        audio.setWakeArmed(false)
-        audio.setUplinkEnabled(false)
-        audio.setPromptPlayback(true)
-        val accepted = player.speak(prompt) {
-            mainHandler.post {
-                if (localFallbackGeneration.get() != generation ||
-                    !localFallbackActive.compareAndSet(true, false)
-                ) {
-                    return@post
-                }
+            if (id == playbackId.get() && playbackTerminalState.finish(id, epoch)) {
+                clearLocalCommandPrePauseLocked(resume = false)
+                playbackId.set(-1)
+                tourId = playbackTourId
+                playbackTourId = null
+                serverPlaybackPaused.set(false)
                 audio.setPromptPlayback(false)
-                if (fallbackPromptGate.finishLocal(recoveryId)) {
-                    applyTurnErrorFinalState(finalState)
-                }
+                audio.setWakeArmed(canArmWake())
+                finished = true
             }
         }
-        if (!accepted && localFallbackGeneration.get() == generation &&
-            localFallbackActive.compareAndSet(true, false)
-        ) {
-            audio.setPromptPlayback(false)
-            if (fallbackPromptGate.finishLocal(recoveryId)) {
-                applyTurnErrorFinalState(finalState)
+        if (finished) {
+            socket.get()?.takeIf { ready.get() }?.send(ProtocolEncoder.playbackFinished(id))
+            emit(FastVoiceEvent.PlaybackFinished(id, tourId))
+            tourId?.let { log(FastVoiceLogLevel.DEBUG, "tour playback finished: $it") }
+        }
+    }
+
+    private fun handlePlaybackFailed(id: Int, reason: String) {
+        val code = playbackFailureCode(reason)
+        var report = false
+        var tourId: String? = null
+        synchronized(playbackControlLock) {
+            val epoch = playbackEpoch.get()
+            if (id != playbackId.get()) return
+            if (playbackTerminalState.fail(id, epoch, reason) ==
+                PlaybackTerminalState.FailureResult.RECORDED
+            ) {
+                clearLocalCommandPrePauseLocked(resume = false)
+                playbackId.set(-1)
+                tourId = playbackTourId
+                playbackTourId = null
+                serverPlaybackPaused.set(false)
+                audio.setPromptPlayback(false)
+                audio.setWakeArmed(canArmWake())
+                report = true
             }
-            emitError(code = "fallback_tts_unavailable")
+        }
+        if (report) {
+            socket.get()?.takeIf { ready.get() }?.send(ProtocolEncoder.playbackFailed(id, code))
+            emit(FastVoiceEvent.PlaybackFailed(id, tourId, code))
+            tourId?.let { log(FastVoiceLogLevel.DEBUG, "tour playback failed: $it code=$code") }
         }
     }
 
-    private fun cancelLocalFallback() {
-        localFallbackGeneration.incrementAndGet()
-        val wasActive = localFallbackActive.getAndSet(false)
-        fallbackPromptPlayer?.stop()
-        if (wasActive) {
+    private fun invalidatePlayback() {
+        synchronized(playbackControlLock) {
+            val current = playbackId.getAndSet(-1)
+            playbackTourId = null
+            val epoch = playbackEpoch.incrementAndGet()
+            if (current >= 0) playbackTerminalState.invalidate(current, epoch)
+            clearLocalCommandPrePauseLocked(resume = false)
+            serverPlaybackPaused.set(false)
+            audio.interruptPlayback()
             audio.setPromptPlayback(false)
+            audio.setWakeArmed(canArmWake())
         }
     }
 
-    private fun scheduleReconnect(generation: Long) {
-        if (!started.get() || !config.autoReconnect || !sessions.isCurrent(generation)) return
-        val attempt = reconnectAttempt.getAndIncrement()
-        val delays = longArrayOf(1, 2, 4, 8, 15, 30)
-        val delay = delays[minOf(attempt, delays.lastIndex)]
-        log(FastVoiceLogLevel.INFO, "reconnecting in ${delay}s")
-        reconnectFuture?.cancel(false)
-        reconnectFuture = scheduler.schedule({ connect(generation) }, delay, TimeUnit.SECONDS)
-    }
+    private fun sendIfReady(message: String): Boolean =
+        socket.get()?.takeIf { ready.get() }?.send(message) == true
 
-    private fun requireTrustedDevice(code: String): Boolean {
-        if (config.deviceId != null) return true
-        emitError(code = code)
-        return false
+    private fun canArmWake(): Boolean =
+        started.get() && ready.get() && config.wakeEnabled &&
+            wakeWords.get().isNotEmpty() && playbackId.get() < 0 &&
+            !localFallbackActive.get() && !audio.isUplinkEnabled() &&
+            isOrderCaptureAllowed()
+
+    private fun isOrderCaptureAllowed(): Boolean = orderState.captureAllowed()
+
+    private fun syncKwsSession() {
+        audio.setKwsSessionEnabled(
+            orderState.wakeKwsEnabled(
+                started = started.get(),
+                ready = ready.get(),
+                wakeRequested = config.wakeEnabled,
+            ),
+        )
     }
 
     private fun selectedLocalWakeWords(): List<String> =
         if (config.preferredWakeWords.isEmpty()) AudioEngine.SUPPORTED_WAKE_WORDS.toList()
         else config.preferredWakeWords
 
-    private fun emitError(
-        code: String? = null,
+    private fun startLocalFallback(text: String) {
+        val player = fallbackPromptPlayer ?: return
+        cancelLocalFallback()
+        val generation = localFallbackGeneration.incrementAndGet()
+        localFallbackActive.set(true)
+        audio.stopCapture()
+        audio.setWakeArmed(false)
+        audio.setPromptPlayback(true)
+        if (!player.speak(text) { success ->
+                if (localFallbackGeneration.get() != generation) return@speak
+                localFallbackActive.set(false)
+                audio.setPromptPlayback(playbackId.get() >= 0)
+                audio.setWakeArmed(canArmWake())
+                if (!success) emitLocalError("fallback_tts_unavailable")
+            }
+        ) {
+            localFallbackActive.set(false)
+            audio.setPromptPlayback(playbackId.get() >= 0)
+            audio.setWakeArmed(canArmWake())
+            emitLocalError("fallback_tts_unavailable")
+        }
+    }
+
+    private fun cancelLocalFallback() {
+        localFallbackGeneration.incrementAndGet()
+        localFallbackActive.set(false)
+        fallbackPromptPlayer?.stop()
+        audio.setPromptPlayback(playbackId.get() >= 0)
+    }
+
+    private fun handleDisconnected(
+        session: Long,
+        webSocket: WebSocket,
+        code: String?,
+        message: String?,
+        cause: Throwable?,
+    ) {
+        var current = false
+        sessions.runIfCurrent(session) {
+            current = socket.compareAndSet(webSocket, null)
+            if (current) {
+                synchronized(orderSendLock) {
+                    ready.set(false)
+                    orderState.markConnectionUnready()
+                }
+                wakeWords.set(emptyList())
+                audio.setKwsSessionEnabled(false)
+                audio.setWakeArmed(false)
+                audio.stopCapture()
+                cancelLocalFallback()
+                invalidatePlayback()
+            }
+        }
+        if (!current) return
+        code?.let { emitLocalError(it, message, cause) }
+        scheduleReconnect(session)
+    }
+
+    private fun terminateProtocol(code: String, cause: Throwable? = null) {
+        emitLocalError(code, cause?.message, cause)
+        synchronized(orderSendLock) {
+            ready.set(false)
+            orderState.markConnectionUnready()
+        }
+        audio.setKwsSessionEnabled(false)
+        audio.setWakeArmed(false)
+        audio.stopCapture()
+        cancelLocalFallback()
+        invalidatePlayback()
+        socket.get()?.close(1_002, code)
+    }
+
+    private fun clearConnectionState() {
+        wakeWords.set(emptyList())
+        invalidatePlayback()
+    }
+
+    private fun scheduleReconnect(session: Long) {
+        if (!started.get() || !config.autoReconnect || !sessions.isCurrent(session)) return
+        val attempt = reconnectAttempt.getAndIncrement()
+        val delays = longArrayOf(1, 2, 4, 8, 15, 30)
+        val delay = delays[minOf(attempt, delays.lastIndex)]
+        reconnectFuture?.cancel(false)
+        reconnectFuture = scheduler.schedule({ connect(session) }, delay, TimeUnit.SECONDS)
+    }
+
+    private fun playbackFailureCode(reason: String): String = when {
+        "decode" in reason -> "opus_decode_failed"
+        "empty audio stream" in reason -> "audio_stream_empty"
+        "write" in reason -> "audio_track_write_failed"
+        "drain" in reason -> "audio_track_drain_failed"
+        "pause" in reason || "resume" in reason || "play " in reason ->
+            "audio_track_control_failed"
+        else -> "audio_playback_failed"
+    }
+
+    private fun emitLocalError(
+        code: String,
         message: String? = null,
-        prompt: String? = null,
         cause: Throwable? = null,
     ) {
-        emit(FastVoiceEvent.Error(FastVoiceError(code, message, prompt, cause)))
+        emit(
+            FastVoiceEvent.Error(
+                FastVoiceError(
+                    scope = "sdk",
+                    code = code,
+                    message = message,
+                    recoverable = true,
+                    cause = cause,
+                ),
+            ),
+        )
     }
 
     private fun emit(event: FastVoiceEvent) {
         mainHandler.post {
-            safeListenerCall { listener.onEvent(event) }
-            when (event) {
-                is FastVoiceEvent.StateChanged -> safeListenerCall {
-                    listener.onStateChanged(event.state)
-                }
-                is FastVoiceEvent.Asr -> safeListenerCall { listener.onAsr(event.text) }
-                is FastVoiceEvent.ReplyDelta -> safeListenerCall {
-                    listener.onReplyDelta(event.text)
-                }
-                is FastVoiceEvent.Error -> safeListenerCall { listener.onError(event.error) }
-                is FastVoiceEvent.ActiveWakeWords -> safeListenerCall {
-                    listener.onActiveWakeWords(event.words)
-                }
-                is FastVoiceEvent.ContextUpdated -> safeListenerCall {
-                    listener.onContextUpdated(event)
-                }
-                is FastVoiceEvent.ArrivalAccepted -> safeListenerCall {
-                    listener.onArrivalAccepted(event)
-                }
-                is FastVoiceEvent.ArrivalRejected -> safeListenerCall {
-                    listener.onArrivalRejected(event)
-                }
+            runCatching { listener.onEvent(event) }.onFailure {
+                log(FastVoiceLogLevel.ERROR, "listener callback failed", it)
             }
-        }
-    }
-
-    private inline fun safeListenerCall(block: () -> Unit) {
-        runCatching(block).onFailure { error ->
-            log(FastVoiceLogLevel.ERROR, "listener callback failed", error)
         }
     }
 
@@ -1221,7 +1136,6 @@ class FastVoiceClient @JvmOverloads constructor(
     }
 
     companion object {
-        /** The local model capability. The server still selects the active subset per device. */
         @JvmField
         val SUPPORTED_WAKE_WORDS: List<String> = Collections.unmodifiableList(
             ArrayList(AudioEngine.SUPPORTED_WAKE_WORDS),

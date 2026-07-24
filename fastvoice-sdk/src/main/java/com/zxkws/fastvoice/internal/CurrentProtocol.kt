@@ -1,75 +1,52 @@
 package com.zxkws.fastvoice.internal
 
-internal data class ServerHelloCapabilities(
-    val encoding: String?,
-    val inputRate: Long?,
-    val outputRate: Long?,
-    val frameMs: Long?,
-    val wakeEnabled: Boolean?,
+internal data class ReadyMessage(
+    val connectionId: String?,
     val wakeWords: List<String>?,
-    val controlEnabled: Boolean?,
-    val controlProtocol: String?,
-    val controlActions: List<String>?,
-    val localCommandEnabled: Boolean?,
-    val candidateMessage: String?,
-    val decisionMessage: String?,
-    val confirmTimeoutMs: Long?,
-    val generationBound: Boolean?,
+    val controlTimeoutMs: Long?,
 )
 
-/** The one wire contract implemented by this pre-release SDK. */
+/** Constants and validation for the only FastVoice wire protocol. */
 internal object CurrentProtocol {
     const val INPUT_RATE = 16_000
     const val OUTPUT_RATE = 48_000
     const val FRAME_MS = 20
+    const val MAX_CAPTURE_PRE_ROLL_MS = 1_800
+    val READY_FIELDS = setOf("type", "connection_id", "wake_words", "control_timeout_ms")
 
-    val CONTROL_ACTIONS = listOf(
-        "playback.begin",
-        "playback.end",
+    val CONTROL_ACTIONS = setOf(
+        "capture.start",
+        "capture.stop",
         "playback.stop",
         "playback.pause",
         "playback.resume",
-        "playback.replay",
-        "playback.skip",
-        "audio.volume.adjust",
-        "uplink.start",
-        "uplink.stop",
+        "volume.up",
+        "volume.down",
     )
 
-    val PLAYBACK_ACTIONS = setOf(
-        "playback.begin",
-        "playback.end",
-        "playback.stop",
-        "playback.pause",
-        "playback.resume",
-        "playback.replay",
-        "playback.skip",
+    val STATE_VALUES = setOf(
+        "idle",
+        "sleeping",
+        "listening",
+        "recognizing",
+        "generating",
+        "speaking",
+        "prompting",
     )
 
-    fun acceptsHello(
-        hello: ServerHelloCapabilities,
+    fun acceptsReady(
+        ready: ReadyMessage,
         supportedWakeWords: Set<String>,
     ): Boolean {
-        val wakeWords = hello.wakeWords ?: return false
-        val actions = hello.controlActions ?: return false
-        return hello.encoding == "opus" &&
-            hello.inputRate == INPUT_RATE.toLong() &&
-            hello.outputRate == OUTPUT_RATE.toLong() &&
-            hello.frameMs == FRAME_MS.toLong() &&
-            hello.wakeEnabled != null &&
-            (!hello.wakeEnabled || wakeWords.isNotEmpty()) &&
-            wakeWords.none(String::isBlank) &&
-            wakeWords.distinct().size == wakeWords.size &&
-            wakeWords.all(supportedWakeWords::contains) &&
-            hello.controlEnabled == true &&
-            hello.controlProtocol == "commands-v1" &&
-            actions == CONTROL_ACTIONS &&
-            hello.localCommandEnabled == true &&
-            hello.candidateMessage == "local_command_candidate" &&
-            hello.decisionMessage == "local_command_decision" &&
-            hello.confirmTimeoutMs?.let { it > 0L } == true &&
-            hello.generationBound == true
+        val words = ready.wakeWords ?: return false
+        return ready.connectionId?.isNotBlank() == true &&
+            words.none(String::isBlank) &&
+            words.distinct().size == words.size &&
+            words.all(supportedWakeWords::contains) &&
+            ready.controlTimeoutMs?.let { it > 0L } == true
     }
 
-    fun acceptsBeforeHello(messageType: String): Boolean = messageType == "hello"
+    fun acceptsBeforeReady(messageType: String): Boolean = messageType == "ready"
+
+    fun acceptsReadyFields(fields: Set<String>): Boolean = fields == READY_FIELDS
 }

@@ -1,14 +1,16 @@
 # FastVoice Android SDK
 
-FastVoice Android SDK 把录音、离线唤醒、Opus 编解码、WebSocket、播放、打断、重连和协议细节收进一个 Android Library。业务 App 只负责申请麦克风权限、提供设备凭证、监听原始事件，以及原样转发车辆平台已签名的可信上下文或到点消息。
+FastVoice Android SDK 把录音、离线唤醒与控制词、Opus、WebSocket、播放、打断、
+重连和协议状态机收进一个 Android Library。宿主 App 使用强类型 API，不拼接或解析
+WebSocket JSON。
 
-当前版本仅包含 `arm64-v8a` 原生库，最低支持 Android 7.0（API 24）。SDK 只支持
-当前服务端协议：Opus 音频、`commands-v1` 控制和服务端裁决的本地控制词；服务端
-协商结果不满足这些条件时会报告 `unsupported_server_protocol` 并结束连接，不做旧协议降级。
+当前产物只包含 `arm64-v8a` 原生库，最低支持 Android 7.0（API 24）。SDK 只实现
+仓库当前的唯一协议，不兼容旧版 `commands-v1`、`context_update`、
+`spot_arrival` 或 `sendTrustedMessage`。
 
 ## 安装
 
-在项目的 `settings.gradle.kts` 中加入 JitPack：
+在 `settings.gradle.kts` 中加入 JitPack：
 
 ```kotlin
 dependencyResolutionManagement {
@@ -21,173 +23,189 @@ dependencyResolutionManagement {
 }
 ```
 
-在 App 模块中加入一行依赖：
+在 App 模块中加入依赖：
 
 ```kotlin
 dependencies {
-    implementation("com.github.zxkws:fastvoice-android-sdk:0.3.2")
+    implementation("com.github.zxkws:fastvoice-android-sdk:0.4.0")
 }
 ```
 
-GitHub Release 同时附带 AAR 和 SHA-256，供离线留档；正常集成仍推荐上面的 Maven
-坐标，因为 OkHttp、Concentus 等传递依赖会自动解析。
+SDK Manifest 已声明 `INTERNET` 和 `RECORD_AUDIO`。`RECORD_AUDIO` 仍是运行时权限，
+必须由宿主在 `start()` 前取得。
 
-SDK 的 Manifest 已包含网络和录音权限，合并后的 App Manifest 会包含：
+## 最小接入
 
-```xml
-<uses-permission android:name="android.permission.INTERNET" />
-<uses-permission android:name="android.permission.RECORD_AUDIO" />
-```
-
-宿主无需重复声明，但 `RECORD_AUDIO` 是运行时权限，仍必须由宿主 App 在启动 SDK 前取得。完整可运行接入见 [`sample`](sample)。
-
-## 最小接入边界
-
-生产 App 只需完成以下工作：
-
-1. 创建并持有一个 SDK 客户端实例；
-2. 在页面或服务进入工作状态后启动，在不再使用时停止，并在持有者销毁时释放；
-3. 把 SDK 回调的 `state`、`asr`、`reply` 和 `error` 原始字段交给业务层；
-4. 从设备登录体系或自己的服务端取得短期设备 token；
-5. 把车辆平台已经 HMAC 签名的上下文/到点 JSON 原样交给 SDK。
-
-业务 App 不需要接入 ASR、LLM、TTS、内容安全或知识库供应商，也不需要理解内部 WebSocket 消息、音频帧、重连和连续对话窗口。
-
-暂停、继续、重播、跳过和音量调节也由 SDK 内部执行。服务端识别意图后通过私有控制协议驱动 `AudioTrack` 或 Android 媒体音量；业务 App 不需要增加播放器回调、广播接收器或控制代码。重播使用 SDK 保存的上一段完整语音，缓存上限为 60 秒且只保存在内存中。
-
-具体调用以同一版本仓库中的 [`sample`](sample) 为准；不要复制 SDK 的 internal 类到业务工程。
-
-## 最小代码
-
-SDK 回调在 Android 主线程执行，可以直接更新界面。下面的 `deviceCredentialStore` 代表业务 App 自己的安全设备凭证模块：
+设备 ID 和短期 token 是必需配置。`DeviceTokenProvider` 是同步接口，应从安全缓存
+立即返回 token；需要联网刷新时，请在启动 SDK 前完成。
 
 ```kotlin
-val listener = object : FastVoiceListenerAdapter() {
-    override fun onStateChanged(state: FastVoiceState) {
-        stateView.text = state.value
-    }
-
-    override fun onAsr(text: String) {
-        asrView.text = text
-    }
-
-    override fun onReplyDelta(text: String) {
-        replyView.append(text)
-    }
-
-    override fun onError(error: FastVoiceError) {
-        errorCodeView.text = error.code
-        errorMessageView.text = error.message
-        errorPromptView.text = error.prompt
-    }
-
-    override fun onContextUpdated(event: FastVoiceEvent.ContextUpdated) {
-        contextVersionView.text = event.version.toString()
-    }
-
-    override fun onArrivalAccepted(event: FastVoiceEvent.ArrivalAccepted) {
-        arrivalEventIdView.text = event.eventId
-    }
-
-    override fun onArrivalRejected(event: FastVoiceEvent.ArrivalRejected) {
-        arrivalErrorCodeView.text = event.code
-        arrivalErrorMessageView.text = event.message
-    }
-}
-
 val client = FastVoiceClient.builder(applicationContext)
     .endpoint("wss://voice.example.com/ws")
-    .device(deviceId) { id -> deviceCredentialStore.currentToken(id) }
-    .listener(listener)
+    .device(deviceId) { id -> credentialStore.currentToken(id) }
+    .listener { event ->
+        when (event) {
+            is FastVoiceEvent.StateChanged ->
+                stateView.text = event.state.value
+
+            is FastVoiceEvent.Transcript -> {
+                // role、text、final 均按服务端原值交给业务层。
+                transcriptView.text = event.text
+            }
+
+            is FastVoiceEvent.OrderAck ->
+                orderResultView.text = "${event.action}:${event.id}:${event.rev}"
+
+            is FastVoiceEvent.TourAck ->
+                tourResultView.text = event.id
+
+            is FastVoiceEvent.PlaybackFinished ->
+                playbackResultView.text = "${event.playbackId}:${event.tourId}"
+
+            is FastVoiceEvent.PlaybackFailed ->
+                playbackResultView.text =
+                    "${event.playbackId}:${event.tourId}:${event.code}"
+
+            is FastVoiceEvent.Error -> {
+                errorCodeView.text = event.error.code
+                errorMessageView.text = event.error.message
+            }
+        }
+    }
     .build()
 
 client.start()
 ```
 
-客户端实例还提供：
+回调在 Android 主线程执行。一个前台语音会话复用一个客户端实例：
 
 ```kotlin
 client.interrupt()
-client.sendTrustedMessage(signedJsonFromVehiclePlatform)
 client.stop()
 client.close()
 ```
 
-`interrupt()` 会先停止本地当前播放，再通过同一 WebSocket 发送显式取消消息，让服务端终止该连接的当前生成；它不再冒充一个本地语音控制词候选。
+`interrupt()` 会先停止当前本地输出，再取消服务端当前轮次。`stop()` 后同一实例仍可
+再次 `start()`；`close()` 后不可复用。
 
-`start()` 和 `sendTrustedMessage()` 返回 `Boolean`，只表示当前 SDK/WebSocket 是否接受了请求；验签、版本、TTL 和业务结果仍以回调为准。连接尚未完成初始协商时不会暗中排队或重放已签名消息，调用方应根据 `false` 决定是否由车辆平台重新生成。`DeviceTokenProvider` 是同步接口，应从安全缓存立即返回当前短期 token；如果取 token 需要网络请求，应在启动 SDK 前完成获取。
+## 订单会话
+
+`OrderSnapshot` 是完整快照，不是 merge patch。`rev` 在同一订单内严格递增。
+
+```kotlin
+val started = client.startOrder(
+    OrderSnapshot(
+        id = "order-20260724-1",
+        rev = 1,
+        context = mapOf(
+            "park_id" to "nanyuan",
+            "route_id" to "route-a",
+            "current_spot_id" to "dapaozi_wetland",
+        ),
+    ),
+)
+
+client.updateOrder(
+    OrderSnapshot(
+        id = "order-20260724-1",
+        rev = 2,
+        context = mapOf(
+            "park_id" to "nanyuan",
+            "route_id" to "route-a",
+            "current_spot_id" to "yanjing_tower",
+        ),
+    ),
+)
+
+client.endOrder("order-20260724-1", rev = 3, reason = "completed")
+```
+
+`startOrder()`、`updateOrder()` 和 `endOrder()` 返回 `true`，只表示 SDK 接受了
+期望状态；它不代表服务端已经确认。连接尚未 `ready` 时，SDK 会保留最新活动快照，
+并在首次 `ready` 或重连后使用 `order.start` 恢复。服务端结果只以
+`FastVoiceEvent.OrderAck` 或 `FastVoiceEvent.Error` 为准。
+
+同一操作、订单 ID、rev 和 payload 的精确重试是幂等的。同一 rev 换数据会被 SDK
+或服务端拒绝。`endOrder()` 在本地立即终止旧播放，但会保留结束请求直到收到
+对应 `OrderAck(action="end")`。
+
+SDK 区分 desired 与 acknowledged 快照。`start` / `update` 只有在匹配 ACK 后才提交；
+当前操作收到订单错误时回滚到最后一个 acknowledged 快照，失败的首次 start 会清空
+订单，失败的 end 会解除 pending 并恢复原订单音频资格。旧 rev 的迟到错误或 ACK
+不会覆盖较新的 desired 状态。
+
+## 到点与巡游固定播报
+
+宿主不传任意播报文本，只传服务端维护的固定内容键。
+
+```kotlin
+client.playArrival(
+    id = "arrival-1",
+    orderId = "order-20260724-1",
+    orderRev = 2,
+    spotId = "yanjing_tower",
+) // content 默认 arrival_prompt
+
+client.playCruise(
+    id = "cruise-1",
+    content = "park_welcome",
+)
+```
+
+到点请求必须与当前订单的 ID、rev 和 `current_spot_id` 完全一致。巡游播报只允许在
+没有活动订单时调用。`TourAck` 仅表示固定播报请求被接受；真正物理播完或失败分别看
+`PlaybackFinished(playbackId, tourId)` 和
+`PlaybackFailed(playbackId, tourId, code)`。
+
+到点/巡游请求不会跨断线自动排队，传输不可用时方法返回 `false`。
 
 ## 凭证与网络安全
 
-- 示例页的 endpoint、device ID 和 token 输入框只用于本机联调，不会持久化；生产界面不要提供这些输入框。
-- 不要把 token、服务端密钥或任何模型供应商密钥写进源码、`BuildConfig`、资源文件或 Git 仓库。
-- 可信消息的 HMAC 签名密钥只属于车辆平台，不得下发给 SDK 或放进 APK。
-- 生产环境通过安全的凭证 provider 获取短期 token，并在 token 过期时刷新；SDK 只在建立连接时读取凭证。
-- 公网环境只使用 `wss://`。`ws://127.0.0.1` 仅用于 `adb reverse` 本机调试。
-- 不要记录 token；服务端还应校验 device ID 与 token 的绑定关系，并实施过期、撤销、限流和连接审计。
+- WebSocket Upgrade 固定携带 `X-FastVoice-Device-Id` 和
+  `Authorization: Bearer <token>`。
+- 公网只使用 `wss://`；`ws://` 必须显式允许，且只用于本机联调。
+- 不要把 token、服务端密钥或模型供应商密钥写入源码、资源或日志。
+- 同设备的新连接会由服务端 fence 旧连接；SDK 也会忽略旧连接的迟到回调。
 
-## 上下文与到点事件
+## 音频与控制边界
 
-上下文用于让服务端知道车辆当前所在园区、路线、景点或站点。游客的自然语言不能直接改写这些字段。车辆平台生成完整 `context_update` 或 `spot_arrival`，对除 `auth` 外的确定性 JSON 做 HMAC-SHA256 签名，再把完整原文交给 `sendTrustedMessage()`。SDK 只校验消息类型、当前 `device_id` 和签名字段形状，不验 HMAC、不重新序列化、不自动重试；服务端仍负责验签以及设备权限、字段白名单、版本、时效和路线归属。
-
-示例 App 的已签名 JSON 输入框只用于联调，不能照搬到游客可操作的生产页面。
-
-## 生命周期
-
-- 一个前台语音会话复用一个客户端实例，不要每句话都重新创建。
-- 获得麦克风权限后再启动。
-- SDK 回调已经切到主线程，宿主不需要再次切线程。
-- 页面短暂切到后台是否继续工作由宿主业务决定；需要后台语音时，宿主 App 必须按 Android 要求使用带麦克风类型的前台服务并向用户展示通知。
-- 明确停止工作时调用停止；持有客户端的 Activity、Service 或其他组件销毁时务必释放。
-- 不要让两个 SDK 实例同时占用麦克风。
+- 上行固定为 Opus、16 kHz、单声道、每个 WebSocket 二进制消息 20 ms。
+- 下行固定为 Opus、48 kHz、单声道、每个二进制消息 20 ms。
+- 生产录音源固定为 `MIC`。SDK 会尝试在录音启动前绑定平台 AEC；不可用时保留 raw
+  MIC 并上报诊断。
+- `capture.start(pre_roll_ms)` 最多取 1800 ms 录音环；唤醒后固定取满 1800 ms。
+  预滚只发送一次，随后接续实时帧，不重复边界帧。
+- 无活动订单的 idle 阶段关闭上行与唤醒 KWS，并拒绝 `capture.start`。订单开始后，
+  必须先收到匹配的 `order.ack(start)`：`wakeEnabled=true` 才进入仅本地 KWS 的
+  sleeping 模式；`wakeEnabled=false` 才接受服务端下发的 `capture.start` 进入持续
+  listening。重连恢复同样等待 start ACK，订单结束会立即关闭上行与订单 KWS。
+- KWS 在普通播放和 prompt 期间持续运行：WAKE 会被抑制，CONTROL 仍可命中。
+  WAKE 路由不会降级为 CONTROL。
+- 本地控制词只会可逆预暂停当前播放；服务端接受、拒绝或超时都会结束该预暂停。
+- `playback.finished` 是唯一成功终态。网络 `playback.end` 只代表音频包发送完毕。
+- 每个下行 Opus 包必须恰好解码为 20 ms；解码异常、错误帧长或零有效音频都会进入
+  `playback.failed`，不会在随后收到 `playback.end` 时误报成功。
+- 重播和跳过由服务端以新 playback ID 和新音频流实现；SDK 不保留重播缓存。
 
 ## 本地错误提示
 
-当服务端返回 `turn_error.prompt` 后，SDK 会先等待服务端统一音色。只有本轮回到 `sleeping`/`listening` 且始终没有收到服务端音频时，才使用设备已安装的 Android 系统 TTS 播放该提示。播放期间 SDK 会暂停麦克风上行和唤醒检测，完成后恢复服务端当前状态。正常回复和正常服务端 TTS 不会触发本地播报。
+所有服务端错误都通过 `FastVoiceEvent.Error` 原样回调。只有服务端明确提供
+`fallback_text` 时，SDK 才使用 Android 系统 TTS 做最后兜底；兜底期间仍保持 KWS
+运行，但抑制 WAKE。
 
-该能力默认开启，设备未安装可用的中文系统语音包时会通过 `FastVoiceError` 报告。如 OEM 已经有固定离线错误音频，可关闭系统 TTS：
-
-```kotlin
-val config = FastVoiceConfig.builder(endpoint)
-    .localFallbackPromptEnabled(false)
-    .build()
-```
-
-## 唤醒词
-
-SDK 内置离线唤醒模型。服务端返回本设备启用的唤醒词集合，SDK 仅启用“本地模型支持集合”和“服务端配置集合”的交集。增加模型从未训练或预置的新唤醒词仍需要重新发布 SDK；仅切换已预置词无需业务 App 改代码。
-
-## 生产音频边界
-
-- 录音源固定为 `MIC`；不会因短时安静自动切到或依赖 `VOICE_COMMUNICATION`。
-- SDK 会在每次 `AudioRecord.startRecording()` 前尝试创建并启用平台 `AcousticEchoCanceler`，重建录音器时也会重新绑定。部分设备没有可用的软件 AEC，此时 SDK 会报告降级错误但仍保留 raw MIC 上行；正式硬件应优先提供可靠的硬件回采/AEC，并继续使用服务端同代 TTS 回声过滤作为第二道保护。
-- 播放采用 `USAGE_VOICE_COMMUNICATION`。AudioTrack 初始化、写入、恢复或排空失败会报告 `playback_failed`，不会发送成功完成或 ACK。
-- 本地 KWS 只把控制词当作候选：先可逆暂停同一播放代，再由服务端云 ASR 和回声边界返回接受/拒绝；拒绝和超时会恢复同代缓冲。
-
-## 示例工程
+## 构建与验证
 
 ```bash
+./gradlew :fastvoice-sdk:testDebugUnitTest
+./gradlew :fastvoice-sdk:lint
 ./gradlew :sample:assembleDebug
-adb install -r sample/build/outputs/apk/debug/sample-debug.apk
 ```
 
-连接开发机服务时可执行：
+连接本机 8100 端口时：
 
 ```bash
 adb reverse tcp:8100 tcp:8100
 ```
 
-然后在示例页使用 `ws://127.0.0.1:8100/ws`。生产联调应使用真实 `wss://` 地址和后端签发的测试设备凭证。
-
-`/Users/q/AndroidStudioProjects/voicekit-android/fastvoice-sdk-demo` 另提供外部消费验证：它在构建时现场生成本仓库的 release AAR，再由一个 Java App 直接消费该 AAR，不包含重复的音频或协议实现。
-
-## SDK 职责
-
-- 16 kHz 单声道麦克风采集与 20 ms Opus 上行；
-- 48 kHz Opus 下行播放；
-- 离线唤醒、播放期间打断和连续对话；
-- WebSocket 建连、心跳、重连与超时处理；
-- 服务端控制协议以及已签名车辆消息的原样转发；
-- 将服务端状态、识别文本、回复文本和错误字段原样回调给宿主，同时保持内部协议私有。
-
-内容安全、意图识别、天气/日期/景点知识、ASR、LLM 与正常 TTS 均由服务端统一处理；Android 系统 TTS 只是服务端错误音频整体失败时的最后兜底。
+完整可运行接入见 [`sample`](sample)。SDK 负责音频、协议和本地控制；ASR、意图、
+知识库、内容安全、LLM 与正常 TTS 均由服务端统一处理。

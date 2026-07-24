@@ -85,10 +85,10 @@ class FastVoiceConfig @JvmOverloads constructor(
         require(allowInsecureConnection || !endpoint.startsWith("ws://", ignoreCase = true)) {
             "ws:// requires allowInsecureConnection=true"
         }
-        require((deviceId == null) == (tokenProvider == null)) {
-            "deviceId and tokenProvider must be configured together"
+        require(deviceId != null && tokenProvider != null) {
+            "deviceId and tokenProvider are required"
         }
-        deviceId?.let(::requireDeviceId)
+        requireDeviceId(deviceId)
     }
 
     /** Kotlin-friendly constructor for fixed device credentials. */

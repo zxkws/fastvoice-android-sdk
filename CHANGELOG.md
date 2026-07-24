@@ -1,6 +1,19 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — 2026-07-24
+
+- SDK 只实现新的 `/ws` 协议：必需设备请求头鉴权、`hello/ready` 握手和固定
+  16 kHz 上行、48 kHz 下行 Opus 参数，不兼容旧协议 JSON。
+- 新增强类型 `OrderSnapshot`、`startOrder`、`updateOrder`、`endOrder`、
+  `playArrival` 和 `playCruise`；订单完整快照支持精确幂等重试和重连恢复。
+- 回调统一为 `FastVoiceEvent`，到点/巡游从服务端接收确认，并通过带 `tourId` 的
+  `PlaybackFinished` / `PlaybackFailed` 报告物理播放终态。
+- `capture.start` 使用最多 1800 ms 的有界预滚，唤醒使用完整录音环，预滚与实时帧
+  不重复。
+- KWS 在播放和 prompt 期间持续运行，只抑制 WAKE，仍允许 CONTROL；WAKE 不会
+  降级为 CONTROL。
+- 删除端侧重播/跳过缓存和旧的通用 JSON 发送 API；重播和跳过统一由服务端创建新
+  playback ID 与音频流。
 
 ## 0.3.0 — 2026-07-22
 

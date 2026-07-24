@@ -1,137 +1,123 @@
 package com.zxkws.fastvoice.internal
 
-import com.zxkws.fastvoice.FastVoiceConfig
+import com.zxkws.fastvoice.OrderSnapshot
 
-/** Owns the wire field names so they never leak into the host application's integration code. */
+/** Owns every JSON field in the single FastVoice wire protocol. */
 internal object ProtocolEncoder {
-    /**
-     * Encodes the initial capability negotiation.
-     *
-     * The host app does not implement the control protocol. The SDK advertises the exact current
-     * contract and rejects a server that negotiates anything else.
-     */
     @JvmSynthetic
-    fun hello(config: FastVoiceConfig, supportedWakeWords: Collection<String>): String {
-        val wakeWords = selectedWakeWords(config, supportedWakeWords)
-        val wake = linkedMapOf<String, Any?>(
-            "enabled" to config.wakeEnabled,
-        )
-        wake["words"] = wakeWords
-
-        val message = linkedMapOf<String, Any?>(
+    fun hello(wakeEnabled: Boolean): String = JsonEncoder.encode(
+        linkedMapOf(
             "type" to "hello",
-            "audio" to linkedMapOf(
-                "encoding" to "opus",
-                "input_rate" to CurrentProtocol.INPUT_RATE,
-                "output_rate" to CurrentProtocol.OUTPUT_RATE,
-                "frame_ms" to CurrentProtocol.FRAME_MS,
-            ),
-            "wake" to wake,
-            "control" to linkedMapOf(
-                "protocol" to "commands-v1",
-                "actions" to CurrentProtocol.CONTROL_ACTIONS,
-            ),
-        )
-        config.deviceId?.let { deviceId ->
-            message["device"] = linkedMapOf(
-                "id" to deviceId,
-                "token" to config.requireDeviceToken(),
-            )
-        }
-        return JsonEncoder.encode(message)
-    }
+            "wake" to wakeEnabled,
+        ),
+    )
+
+    @JvmSynthetic
+    fun orderStart(snapshot: OrderSnapshot): String = orderSnapshot("order.start", snapshot)
+
+    @JvmSynthetic
+    fun orderUpdate(snapshot: OrderSnapshot): String = orderSnapshot("order.update", snapshot)
+
+    private fun orderSnapshot(type: String, snapshot: OrderSnapshot): String = JsonEncoder.encode(
+        linkedMapOf(
+            "type" to type,
+            "id" to snapshot.id,
+            "rev" to snapshot.rev,
+            "context" to snapshot.context,
+        ),
+    )
+
+    @JvmSynthetic
+    fun orderEnd(id: String, rev: Long, reason: String): String = JsonEncoder.encode(
+        linkedMapOf(
+            "type" to "order.end",
+            "id" to id,
+            "rev" to rev,
+            "reason" to reason,
+        ),
+    )
+
+    @JvmSynthetic
+    fun tourPlay(
+        id: String,
+        source: String,
+        content: String,
+        orderId: String? = null,
+        orderRev: Long? = null,
+        spotId: String? = null,
+    ): String = JsonEncoder.encode(
+        linkedMapOf<String, Any?>(
+            "type" to "tour.play",
+            "id" to id,
+            "source" to source,
+            "content" to content,
+        ).apply {
+            orderId?.let { put("order_id", it) }
+            orderRev?.let { put("order_rev", it) }
+            spotId?.let { put("spot_id", it) }
+        },
+    )
 
     @JvmSynthetic
     fun wake(word: String): String = JsonEncoder.encode(
-        linkedMapOf(
-            "type" to "wake",
-            "word" to word,
-        ),
+        linkedMapOf("type" to "wake", "word" to word),
     )
 
     @JvmSynthetic
-    fun localCommandCandidate(id: String, text: String, generation: Int): String {
-        require(id.isNotEmpty()) { "local command candidate id must not be empty" }
-        return JsonEncoder.encode(
-            linkedMapOf(
-                "type" to "local_command_candidate",
-                "id" to id,
-                "text" to text,
-                "gen" to generation,
-            ),
-        )
-    }
-
-    @JvmSynthetic
-    fun interrupt(): String = JsonEncoder.encode(linkedMapOf("type" to "interrupt"))
-
-    @JvmSynthetic
-    fun commandAck(id: String): String = JsonEncoder.encode(
+    fun controlCandidate(id: String, playbackId: Int, name: String): String = JsonEncoder.encode(
         linkedMapOf(
-            "type" to "command_ack",
+            "type" to "control.candidate",
             "id" to id,
+            "playback_id" to playbackId,
+            "name" to name,
         ),
     )
 
     @JvmSynthetic
-    fun playbackFinished(generation: Int): String = JsonEncoder.encode(
-        linkedMapOf(
-            "type" to "playback_finished",
-            "gen" to generation,
-        ),
+    fun turnCancel(): String = JsonEncoder.encode(linkedMapOf("type" to "turn.cancel"))
+
+    @JvmSynthetic
+    fun controlResult(id: String, ok: Boolean, code: String? = null): String = JsonEncoder.encode(
+        linkedMapOf<String, Any?>(
+            "type" to "control.result",
+            "id" to id,
+            "ok" to ok,
+        ).apply {
+            code?.takeIf(String::isNotBlank)?.let { put("code", it) }
+        },
     )
 
     @JvmSynthetic
-    fun playbackProgress(generation: Int, playedMs: Long): String {
-        require(playedMs >= 0L) { "playedMs must be non-negative" }
+    fun playbackProgress(id: Int, positionMs: Long): String {
+        require(positionMs >= 0L) { "positionMs must be non-negative" }
         return JsonEncoder.encode(
             linkedMapOf(
-                "type" to "playback_progress",
-                "gen" to generation,
-                "played_ms" to playedMs,
+                "type" to "playback.progress",
+                "id" to id,
+                "position_ms" to positionMs,
             ),
         )
     }
 
     @JvmSynthetic
-    fun playbackFailed(generation: Int, reason: String, commandId: String? = null): String {
-        require(reason.isNotEmpty()) { "playback failure reason must not be empty" }
-        return JsonEncoder.encode(
-            linkedMapOf<String, Any?>(
-                "type" to "playback_failed",
-                "gen" to generation,
-                "reason" to reason,
-            ).apply {
-                commandId?.takeIf(String::isNotEmpty)?.let { put("command_id", it) }
-            },
-        )
-    }
+    fun playbackFinished(id: Int): String = JsonEncoder.encode(
+        linkedMapOf("type" to "playback.finished", "id" to id),
+    )
 
-    private fun selectedWakeWords(
-        config: FastVoiceConfig,
-        supportedWakeWords: Collection<String>,
-    ): List<String> {
-        require(supportedWakeWords.none(String::isBlank)) {
-            "supportedWakeWords must not contain blank values"
-        }
-        val supported = supportedWakeWords.distinct()
-        val preferred = config.preferredWakeWords
-        require(preferred.none(String::isBlank)) {
-            "preferredWakeWords must not contain blank values"
-        }
-        val unsupported = preferred.filterNot(supported.toSet()::contains)
-        require(unsupported.isEmpty()) {
-            "preferredWakeWords contains words unsupported by the local model: $unsupported"
-        }
-        val selected = if (preferred.isEmpty()) supported else preferred.distinct()
-        require(!config.wakeEnabled || selected.isNotEmpty()) {
-            "wakeEnabled requires at least one locally supported wake word"
-        }
-        return selected
+    @JvmSynthetic
+    fun playbackFailed(id: Int, code: String): String {
+        require(code.isNotBlank()) { "playback failure code must not be blank" }
+        return JsonEncoder.encode(
+            linkedMapOf(
+                "type" to "playback.failed",
+                "id" to id,
+                "code" to code,
+            ),
+        )
     }
 }
 
-/** Small dependency-free JSON writer so the codec remains usable in plain JVM unit tests. */
+/** Small dependency-free JSON writer usable from plain JVM unit tests. */
 private object JsonEncoder {
     fun encode(value: Any?): String = buildString { appendValue(value) }
 
@@ -149,34 +135,31 @@ private object JsonEncoder {
                 require(value.isFinite()) { "JSON numbers must be finite" }
                 append(value.toString())
             }
+            is Number -> append(value.toString())
             is Map<*, *> -> {
                 append('{')
-                value.entries.forEachIndexed { index, entry ->
-                    if (index > 0) append(',')
-                    val key = entry.key as? String
-                        ?: throw IllegalArgumentException("JSON object keys must be strings")
+                var first = true
+                value.forEach { (key, item) ->
+                    require(key is String) { "JSON object keys must be strings" }
+                    if (!first) append(',')
+                    first = false
                     appendString(key)
                     append(':')
-                    appendValue(entry.value)
+                    appendValue(item)
                 }
                 append('}')
             }
             is Iterable<*> -> {
                 append('[')
-                value.forEachIndexed { index, item ->
-                    if (index > 0) append(',')
+                var first = true
+                value.forEach { item ->
+                    if (!first) append(',')
+                    first = false
                     appendValue(item)
                 }
                 append(']')
             }
-            is Array<*> -> {
-                append('[')
-                value.forEachIndexed { index, item ->
-                    if (index > 0) append(',')
-                    appendValue(item)
-                }
-                append(']')
-            }
+            is Array<*> -> appendValue(value.asIterable())
             else -> throw IllegalArgumentException(
                 "unsupported JSON value: ${value::class.java.name}",
             )
@@ -195,7 +178,7 @@ private object JsonEncoder {
                 '\r' -> append("\\r")
                 '\t' -> append("\\t")
                 else -> {
-                    if (character.code < 0x20) {
+                    if (character < ' ') {
                         append("\\u")
                         append(character.code.toString(16).padStart(4, '0'))
                     } else {
