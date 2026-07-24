@@ -46,7 +46,7 @@ import org.json.JSONObject
 class FastVoiceClient @JvmOverloads constructor(
     context: Context,
     val config: FastVoiceConfig,
-    private val listener: FastVoiceListener = FastVoiceListenerAdapter(),
+    private val listener: FastVoiceListener = FastVoiceListener { },
 ) : Closeable {
     private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -448,7 +448,7 @@ class FastVoiceClient @JvmOverloads constructor(
             terminateProtocol("missing_message_type")
             return
         }
-        if (!ready.get() && !CurrentProtocol.acceptsBeforeReady(type)) {
+        if (!ready.get() && type != "ready") {
             terminateProtocol("message_before_ready")
             return
         }
@@ -471,7 +471,7 @@ class FastVoiceClient @JvmOverloads constructor(
     }
 
     private fun handleReady(message: JSONObject) {
-        if (!CurrentProtocol.acceptsReadyFields(message.keys().asSequence().toSet())) {
+        if (message.keys().asSequence().toSet() != CurrentProtocol.READY_FIELDS) {
             terminateProtocol("invalid_ready")
             return
         }
@@ -510,7 +510,7 @@ class FastVoiceClient @JvmOverloads constructor(
             terminateProtocol("invalid_state")
             return
         }
-        emit(FastVoiceEvent.StateChanged(FastVoiceState.fromRaw(value)))
+        emit(FastVoiceEvent.StateChanged(FastVoiceState(value)))
     }
 
     private fun handleTranscript(message: JSONObject) {
@@ -530,7 +530,7 @@ class FastVoiceClient @JvmOverloads constructor(
         val id = message.strictString("id")
         val rev = message.strictLong("rev")
         if (action !in setOf("start", "update", "end") || id.isNullOrBlank() ||
-            !CurrentProtocol.acceptsSessionRevision(rev)
+            rev == null || rev < 1L
         ) {
             terminateProtocol("invalid_session_ack")
             return
@@ -722,7 +722,7 @@ class FastVoiceClient @JvmOverloads constructor(
         val recoverable = message.strictBoolean("recoverable")
         val rev = message.strictLong("rev")
         if (scope.isNullOrBlank() || code.isNullOrBlank() || recoverable == null ||
-            (scope == "session" && !CurrentProtocol.acceptsSessionRevision(rev))
+            (scope == "session" && (rev == null || rev < 1L))
         ) {
             terminateProtocol("invalid_error")
             return
@@ -1081,78 +1081,11 @@ class FastVoiceClient @JvmOverloads constructor(
         runCatching { config.logger?.log(level, message, error) }
     }
 
-    class Builder internal constructor(private val context: Context) {
-        private var endpoint: String? = null
-        private var tokenProvider: DeviceTokenProvider? = null
-        private var wakeEnabled = true
-        private var preferredWakeWords: List<String> = emptyList()
-        private var autoReconnect = true
-        private var bypassSystemProxy = false
-        private var allowInsecureConnection = false
-        private var routeAudioToSpeaker = true
-        private var logger: FastVoiceLogger? = null
-        private var listener: FastVoiceListener = FastVoiceListenerAdapter()
-        private var localFallbackPromptEnabled = true
-
-        fun endpoint(endpoint: String) = apply { this.endpoint = endpoint }
-
-        fun token(token: String) = apply {
-            tokenProvider = DeviceTokenProvider.fixed(token)
-        }
-
-        fun tokenProvider(provider: DeviceTokenProvider) = apply {
-            tokenProvider = provider
-        }
-
-        fun wakeEnabled(enabled: Boolean) = apply { wakeEnabled = enabled }
-
-        fun preferredWakeWords(words: List<String>) = apply {
-            preferredWakeWords = ArrayList(words)
-        }
-
-        fun autoReconnect(enabled: Boolean) = apply { autoReconnect = enabled }
-
-        fun bypassSystemProxy(enabled: Boolean) = apply { bypassSystemProxy = enabled }
-
-        fun allowInsecureConnection(allowed: Boolean) = apply {
-            allowInsecureConnection = allowed
-        }
-
-        fun routeAudioToSpeaker(enabled: Boolean) = apply { routeAudioToSpeaker = enabled }
-
-        fun logger(logger: FastVoiceLogger?) = apply { this.logger = logger }
-
-        fun listener(listener: FastVoiceListener) = apply { this.listener = listener }
-
-        fun localFallbackPromptEnabled(enabled: Boolean) = apply {
-            localFallbackPromptEnabled = enabled
-        }
-
-        fun build(): FastVoiceClient {
-            val config = FastVoiceConfig(
-                endpoint = requireNotNull(endpoint) { "endpoint is required" },
-                tokenProvider = requireNotNull(tokenProvider) { "token is required" },
-                wakeEnabled = wakeEnabled,
-                preferredWakeWords = preferredWakeWords,
-                autoReconnect = autoReconnect,
-                bypassSystemProxy = bypassSystemProxy,
-                allowInsecureConnection = allowInsecureConnection,
-                routeAudioToSpeaker = routeAudioToSpeaker,
-                logger = logger,
-                localFallbackPromptEnabled = localFallbackPromptEnabled,
-            )
-            return FastVoiceClient(context, config, listener)
-        }
-    }
-
     companion object {
         @JvmField
         val SUPPORTED_WAKE_WORDS: List<String> = Collections.unmodifiableList(
             ArrayList(AudioEngine.SUPPORTED_WAKE_WORDS),
         )
-
-        @JvmStatic
-        fun builder(context: Context): Builder = Builder(context.applicationContext)
     }
 }
 

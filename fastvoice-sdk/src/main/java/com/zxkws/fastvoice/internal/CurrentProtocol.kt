@@ -46,9 +46,4 @@ internal object CurrentProtocol {
             ready.controlTimeoutMs?.let { it > 0L } == true
     }
 
-    fun acceptsBeforeReady(messageType: String): Boolean = messageType == "ready"
-
-    fun acceptsReadyFields(fields: Set<String>): Boolean = fields == READY_FIELDS
-
-    fun acceptsSessionRevision(rev: Long?): Boolean = rev != null && rev >= 1L
 }

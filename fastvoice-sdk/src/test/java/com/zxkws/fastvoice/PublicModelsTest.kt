@@ -47,6 +47,22 @@ class PublicModelsTest {
     }
 
     @Test
+    fun tokensRejectWhitespaceAndExcessiveLength() {
+        for (token in listOf("has space", "line\nbreak", "x".repeat(4_097))) {
+            assertThrows(IllegalArgumentException::class.java) {
+                DeviceTokenProvider.fixed(token)
+            }
+            val config = FastVoiceConfig(
+                endpoint = "wss://voice.example/ws",
+                tokenProvider = DeviceTokenProvider { token },
+            )
+            assertThrows(IllegalArgumentException::class.java) {
+                config.requireDeviceToken()
+            }
+        }
+    }
+
+    @Test
     fun insecureWebSocketRequiresExplicitOptIn() {
         assertThrows(IllegalArgumentException::class.java) {
             FastVoiceConfig(
@@ -204,6 +220,6 @@ class PublicModelsTest {
     fun validProtocolStatesRemainVerbatim() {
         assertEquals("idle", FastVoiceState.IDLE.value)
         assertEquals("prompting", FastVoiceState.PROMPTING.value)
-        assertEquals("listening", FastVoiceState.fromRaw("listening").value)
+        assertEquals("listening", FastVoiceState("listening").value)
     }
 }

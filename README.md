@@ -42,7 +42,7 @@ GitHub Release AAR 不携带 Maven metadata，因此应用模块需要显式声�
 
 ```kotlin
 dependencies {
-    implementation("com.github.zxkws:fastvoice-android-sdk:0.6.0@aar")
+    implementation("com.github.zxkws:fastvoice-android-sdk:0.7.0@aar")
     implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.25")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("io.github.jaredmdobson:concentus:1.0.2")
@@ -149,7 +149,7 @@ client.endSession("session-001", 2L, "completed");
 ## 设备鉴权
 
 宿主只配置一个不透明 token。SDK 只发送
-`Authorization: Bearer <token>`；不再配置或发送单独的 device ID。服务端由 token
+`Authorization: Bearer <token>`。token 必须为 1–4096 个非空白字符。服务端由 token
 解析自己的稳定设备身份，用它完成重连 fencing 和设备状态隔离。token 可以轮换，
 但不能把 token 本身当作业务设备 ID。
 

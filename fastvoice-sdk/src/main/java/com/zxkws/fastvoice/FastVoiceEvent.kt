@@ -10,19 +10,6 @@ data class FastVoiceState(val value: String) {
         @JvmField val GENERATING = FastVoiceState("generating")
         @JvmField val SPEAKING = FastVoiceState("speaking")
         @JvmField val PROMPTING = FastVoiceState("prompting")
-
-        /** Maps a value that the caller has already validated against the current protocol. */
-        @JvmStatic
-        fun fromRaw(value: String): FastVoiceState = when (value) {
-            IDLE.value -> IDLE
-            SLEEPING.value -> SLEEPING
-            LISTENING.value -> LISTENING
-            RECOGNIZING.value -> RECOGNIZING
-            GENERATING.value -> GENERATING
-            SPEAKING.value -> SPEAKING
-            PROMPTING.value -> PROMPTING
-            else -> FastVoiceState(value)
-        }
     }
 }
 
@@ -78,9 +65,4 @@ sealed class FastVoiceEvent {
  */
 fun interface FastVoiceListener {
     fun onEvent(event: FastVoiceEvent)
-}
-
-/** Java-friendly no-op listener. */
-open class FastVoiceListenerAdapter : FastVoiceListener {
-    override fun onEvent(event: FastVoiceEvent) = Unit
 }

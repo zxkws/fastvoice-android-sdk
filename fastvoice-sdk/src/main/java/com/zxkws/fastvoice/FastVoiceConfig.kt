@@ -2,6 +2,13 @@ package com.zxkws.fastvoice
 
 import java.util.Collections
 
+private fun requireValidToken(token: String): String {
+    require(token.isNotEmpty() && token.length <= 4_096 && token.none(Char::isWhitespace)) {
+        "token must be 1..4096 non-whitespace characters"
+    }
+    return token
+}
+
 /** Supplies the current opaque device token immediately before a connection is opened. */
 fun interface DeviceTokenProvider {
     /**
@@ -14,8 +21,7 @@ fun interface DeviceTokenProvider {
         /** Creates a provider for installations whose token is provisioned with the app. */
         @JvmStatic
         fun fixed(token: String): DeviceTokenProvider {
-            require(token.isNotBlank()) { "token must not be blank" }
-            return FixedDeviceTokenProvider(token)
+            return FixedDeviceTokenProvider(requireValidToken(token))
         }
     }
 }
@@ -69,10 +75,12 @@ class FastVoiceConfig @JvmOverloads constructor(
         }
     }
 
-    internal fun requireDeviceToken(): String =
-        requireNotNull(tokenProvider.token()?.takeIf(String::isNotBlank)) {
+    internal fun requireDeviceToken(): String {
+        val token = requireNotNull(tokenProvider.token()) {
             "DeviceTokenProvider returned no token"
         }
+        return requireValidToken(token)
+    }
 
     /** Never renders endpoint query parameters, a provider, or a credential. */
     override fun toString(): String = buildString {

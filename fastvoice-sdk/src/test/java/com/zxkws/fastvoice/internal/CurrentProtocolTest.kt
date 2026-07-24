@@ -16,10 +16,6 @@ class CurrentProtocolTest {
     @Test
     fun acceptsOnlyACompleteReady() {
         assertTrue(CurrentProtocol.acceptsReady(ready(), supportedWakeWords))
-        assertTrue(CurrentProtocol.acceptsReadyFields(CurrentProtocol.READY_FIELDS))
-        assertFalse(
-            CurrentProtocol.acceptsReadyFields(CurrentProtocol.READY_FIELDS + "unexpected"),
-        )
         assertFalse(
             CurrentProtocol.acceptsReady(ready().copy(connectionId = ""), supportedWakeWords),
         )
@@ -35,24 +31,10 @@ class CurrentProtocolTest {
     }
 
     @Test
-    fun onlyReadyIsLegalBeforeTheConnectionIsUsable() {
-        assertTrue(CurrentProtocol.acceptsBeforeReady("ready"))
-        assertFalse(CurrentProtocol.acceptsBeforeReady("state"))
-        assertFalse(CurrentProtocol.acceptsBeforeReady("playback.start"))
-    }
-
-    @Test
     fun fixedProtocolHasNoReplayOrSkipAndUsesTheFullWakeRing() {
         assertFalse("playback.replay" in CurrentProtocol.CONTROL_ACTIONS)
         assertFalse("playback.skip" in CurrentProtocol.CONTROL_ACTIONS)
         assertTrue("capture.start" in CurrentProtocol.CONTROL_ACTIONS)
         assertTrue(CurrentProtocol.MAX_CAPTURE_PRE_ROLL_MS == 1_800)
-    }
-
-    @Test
-    fun sessionRevisionsStartAtOne() {
-        assertFalse(CurrentProtocol.acceptsSessionRevision(null))
-        assertFalse(CurrentProtocol.acceptsSessionRevision(0))
-        assertTrue(CurrentProtocol.acceptsSessionRevision(1))
     }
 }
