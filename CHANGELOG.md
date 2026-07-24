@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.0 — 2026-07-24
+
+- 宿主鉴权配置精简为一个不透明 token；删除公共 `DeviceCredentials`、`deviceId`
+  和 `.device(...)` API。
+- `DeviceTokenProvider` 改为无参数 `token()`，固定 token 可直接使用 builder
+  的 `.token(...)`。
+- WebSocket Upgrade 只发送 `Authorization: Bearer <token>`，稳定 device ID
+  由服务端解析，不再由 Android 重复传输。
+
 ## 0.5.0 — 2026-07-24
 
 - 公共 API 收敛为通用 `SessionSnapshot`、`SessionRef`、`ContentRequest`，并删除

@@ -368,11 +368,7 @@ class FastVoiceClient @JvmOverloads constructor(
         val request = runCatching {
             Request.Builder()
                 .url(config.endpoint)
-                .apply {
-                    val deviceId = requireNotNull(config.deviceId)
-                    header("X-FastVoice-Device-Id", deviceId)
-                    header("Authorization", "Bearer ${config.requireDeviceToken()}")
-                }
+                .header("Authorization", "Bearer ${config.requireDeviceToken()}")
                 .build()
         }.getOrElse { error ->
             emitLocalError("connection_configuration_invalid", error.message, error)
@@ -1087,7 +1083,6 @@ class FastVoiceClient @JvmOverloads constructor(
 
     class Builder internal constructor(private val context: Context) {
         private var endpoint: String? = null
-        private var deviceId: String? = null
         private var tokenProvider: DeviceTokenProvider? = null
         private var wakeEnabled = true
         private var preferredWakeWords: List<String> = emptyList()
@@ -1101,13 +1096,13 @@ class FastVoiceClient @JvmOverloads constructor(
 
         fun endpoint(endpoint: String) = apply { this.endpoint = endpoint }
 
-        fun device(deviceId: String, tokenProvider: DeviceTokenProvider) = apply {
-            this.deviceId = deviceId
-            this.tokenProvider = tokenProvider
+        fun token(token: String) = apply {
+            tokenProvider = DeviceTokenProvider.fixed(token)
         }
 
-        fun device(credentials: DeviceCredentials) =
-            device(credentials.deviceId, credentials.asTokenProvider())
+        fun tokenProvider(provider: DeviceTokenProvider) = apply {
+            tokenProvider = provider
+        }
 
         fun wakeEnabled(enabled: Boolean) = apply { wakeEnabled = enabled }
 
@@ -1136,8 +1131,7 @@ class FastVoiceClient @JvmOverloads constructor(
         fun build(): FastVoiceClient {
             val config = FastVoiceConfig(
                 endpoint = requireNotNull(endpoint) { "endpoint is required" },
-                deviceId = deviceId,
-                tokenProvider = tokenProvider,
+                tokenProvider = requireNotNull(tokenProvider) { "token is required" },
                 wakeEnabled = wakeEnabled,
                 preferredWakeWords = preferredWakeWords,
                 autoReconnect = autoReconnect,

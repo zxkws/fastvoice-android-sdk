@@ -7,28 +7,43 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PublicModelsTest {
-    private fun credentials() = DeviceCredentials("rover-1", "never-print-this-token")
+    private fun tokenProvider() = DeviceTokenProvider.fixed("never-print-this-token")
 
     @Test
-    fun credentialsAndConfigRedactSecretsFromDebugRepresentations() {
+    fun tokenProviderAndConfigRedactSecretsFromDebugRepresentations() {
         val token = "never-print-this-token"
-        val credentials = DeviceCredentials("rover-1", token)
+        val provider = DeviceTokenProvider.fixed(token)
         val config = FastVoiceConfig(
             endpoint = "wss://voice.example/ws?access_token=$token",
-            credentials = credentials,
+            tokenProvider = provider,
         )
 
-        assertFalse(credentials.toString().contains(token))
+        assertFalse(provider.toString().contains(token))
         assertFalse(config.toString().contains(token))
         assertFalse(config.toString().contains("access_token"))
-        assertTrue(credentials.toString().contains("[redacted]"))
+        assertTrue(provider.toString().contains("[redacted]"))
     }
 
     @Test
-    fun deviceAuthenticationIsMandatory() {
+    fun tokenAuthenticationIsMandatory() {
         assertThrows(IllegalArgumentException::class.java) {
-            FastVoiceConfig(endpoint = "wss://voice.example/ws")
+            FastVoiceConfig.builder("wss://voice.example/ws").build()
         }
+    }
+
+    @Test
+    fun rotatingTokenProviderHasNoDeviceIdArgument() {
+        var calls = 0
+        val config = FastVoiceConfig(
+            endpoint = "wss://voice.example/ws",
+            tokenProvider = DeviceTokenProvider {
+                calls += 1
+                "rotated-token"
+            },
+        )
+
+        assertEquals("rotated-token", config.requireDeviceToken())
+        assertEquals(1, calls)
     }
 
     @Test
@@ -36,13 +51,13 @@ class PublicModelsTest {
         assertThrows(IllegalArgumentException::class.java) {
             FastVoiceConfig(
                 endpoint = "ws://127.0.0.1:8100/ws",
-                credentials = credentials(),
+                tokenProvider = tokenProvider(),
             )
         }
 
         val config = FastVoiceConfig(
             endpoint = "ws://127.0.0.1:8100/ws",
-            credentials = credentials(),
+            tokenProvider = tokenProvider(),
             allowInsecureConnection = true,
         )
         assertEquals("ws://127.0.0.1:8100/ws", config.endpoint)

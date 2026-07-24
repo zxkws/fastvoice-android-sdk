@@ -34,7 +34,6 @@ class MainActivity : Activity() {
     }
 
     private lateinit var endpointInput: EditText
-    private lateinit var deviceIdInput: EditText
     private lateinit var tokenInput: EditText
     private lateinit var attributeInput: EditText
     private lateinit var contentKeyInput: EditText
@@ -101,21 +100,19 @@ class MainActivity : Activity() {
         }
 
         val endpoint = endpointInput.text.toString().trim()
-        val deviceId = deviceIdInput.text.toString().trim()
         val token = tokenInput.text.toString()
         if (endpoint.isBlank()) {
             renderError("endpoint is required")
             return
         }
-        if (deviceId.isBlank() || token.isBlank()) {
-            renderError("device id and token are required")
+        if (token.isBlank()) {
+            renderError("token is required")
             return
         }
 
         try {
             val config = FastVoiceConfig(
                 endpoint = endpoint,
-                deviceId = deviceId,
                 tokenProvider = DeviceTokenProvider.fixed(token),
                 allowInsecureConnection = endpoint.startsWith("ws://", ignoreCase = true),
                 bypassSystemProxy = endpoint.startsWith("ws://127.0.0.1", ignoreCase = true),
@@ -215,7 +212,6 @@ class MainActivity : Activity() {
             setText("ws://127.0.0.1:8100/ws")
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
         }
-        deviceIdInput = input("device id (test only)")
         tokenInput = input("device token (test only)").apply {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
         }
@@ -243,8 +239,6 @@ class MainActivity : Activity() {
             addView(title("FastVoice SDK sample"))
             addView(label("Endpoint"))
             addView(endpointInput)
-            addView(label("Device ID"))
-            addView(deviceIdInput)
             addView(label("Token"))
             addView(tokenInput)
             addView(buttonRow(startButton, stopButton, interruptButton))

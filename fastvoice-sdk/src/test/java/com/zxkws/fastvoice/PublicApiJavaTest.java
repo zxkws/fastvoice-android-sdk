@@ -11,9 +11,8 @@ import org.junit.Test;
 public class PublicApiJavaTest {
     @Test
     public void typedSessionContentAndSingleListenerAreUsableFromJava() throws Exception {
-        DeviceCredentials credentials = new DeviceCredentials("rover-1", "secret-1");
         FastVoiceConfig config = FastVoiceConfig.builder("ws://127.0.0.1:8100/ws")
-            .device(credentials)
+            .token("secret-1")
             .allowInsecureConnection(true)
             .localFallbackPromptEnabled(false)
             .preferredWakeWords(Arrays.asList("布丁", "你好布丁"))
@@ -30,7 +29,7 @@ public class PublicApiJavaTest {
             .putAttribute("variant", "short")
             .build();
 
-        assertEquals("rover-1", config.getDeviceId());
+        assertNotNull(config.getTokenProvider());
         assertEquals("s1", snapshot.getId());
         assertEquals(
             boolean.class,
