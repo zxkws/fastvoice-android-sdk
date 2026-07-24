@@ -36,6 +36,25 @@ class SessionOperationStateTest {
     }
 
     @Test
+    fun staleStartAckCannotRearmWakeBetweenDisconnectAndReconnectStart() {
+        val state = SessionOperationState()
+        val session = snapshot(1)
+        state.start(session)
+        state.acknowledge("start", session.id, session.rev)
+
+        state.markConnectionUnready()
+
+        assertFalse(state.acknowledge("start", session.id, session.rev).matched)
+        assertFalse(state.captureAllowed())
+        assertFalse(state.wakeKwsEnabled(started = true, ready = true, wakeRequested = true))
+
+        assertEquals(session, state.prepareConnectionStart())
+        assertTrue(state.acknowledge("start", session.id, session.rev).startAccepted)
+        assertTrue(state.captureAllowed())
+        assertTrue(state.wakeKwsEnabled(started = true, ready = true, wakeRequested = true))
+    }
+
+    @Test
     fun rejectedInitialStartClearsDesiredAndAllowsAnotherSession() {
         val state = SessionOperationState()
         state.start(snapshot(1))
