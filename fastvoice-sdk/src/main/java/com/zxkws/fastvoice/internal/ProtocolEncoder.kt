@@ -1,6 +1,7 @@
 package com.zxkws.fastvoice.internal
 
-import com.zxkws.fastvoice.OrderSnapshot
+import com.zxkws.fastvoice.ContentRequest
+import com.zxkws.fastvoice.SessionSnapshot
 
 /** Owns every JSON field in the single FastVoice wire protocol. */
 internal object ProtocolEncoder {
@@ -13,24 +14,29 @@ internal object ProtocolEncoder {
     )
 
     @JvmSynthetic
-    fun orderStart(snapshot: OrderSnapshot): String = orderSnapshot("order.start", snapshot)
+    fun sessionStart(snapshot: SessionSnapshot): String =
+        sessionSnapshot("session.start", snapshot)
 
     @JvmSynthetic
-    fun orderUpdate(snapshot: OrderSnapshot): String = orderSnapshot("order.update", snapshot)
+    fun sessionUpdate(snapshot: SessionSnapshot): String =
+        sessionSnapshot("session.update", snapshot)
 
-    private fun orderSnapshot(type: String, snapshot: OrderSnapshot): String = JsonEncoder.encode(
+    private fun sessionSnapshot(
+        type: String,
+        snapshot: SessionSnapshot,
+    ): String = JsonEncoder.encode(
         linkedMapOf(
             "type" to type,
             "id" to snapshot.id,
             "rev" to snapshot.rev,
-            "context" to snapshot.context,
+            "attributes" to snapshot.attributes,
         ),
     )
 
     @JvmSynthetic
-    fun orderEnd(id: String, rev: Long, reason: String): String = JsonEncoder.encode(
+    fun sessionEnd(id: String, rev: Long, reason: String): String = JsonEncoder.encode(
         linkedMapOf(
-            "type" to "order.end",
+            "type" to "session.end",
             "id" to id,
             "rev" to rev,
             "reason" to reason,
@@ -38,23 +44,17 @@ internal object ProtocolEncoder {
     )
 
     @JvmSynthetic
-    fun tourPlay(
-        id: String,
-        source: String,
-        content: String,
-        orderId: String? = null,
-        orderRev: Long? = null,
-        spotId: String? = null,
-    ): String = JsonEncoder.encode(
+    fun contentPlay(request: ContentRequest): String = JsonEncoder.encode(
         linkedMapOf<String, Any?>(
-            "type" to "tour.play",
-            "id" to id,
-            "source" to source,
-            "content" to content,
+            "type" to "content.play",
+            "id" to request.id,
+            "key" to request.key,
+            "attributes" to request.attributes,
         ).apply {
-            orderId?.let { put("order_id", it) }
-            orderRev?.let { put("order_rev", it) }
-            spotId?.let { put("spot_id", it) }
+            request.session?.let {
+                put("session_id", it.id)
+                put("session_rev", it.rev)
+            }
         },
     )
 
@@ -118,7 +118,7 @@ internal object ProtocolEncoder {
 }
 
 /** Small dependency-free JSON writer usable from plain JVM unit tests. */
-private object JsonEncoder {
+internal object JsonEncoder {
     fun encode(value: Any?): String = buildString { appendValue(value) }
 
     private fun StringBuilder.appendValue(value: Any?) {

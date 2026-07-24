@@ -1,6 +1,6 @@
 package com.zxkws.fastvoice
 
-/** A server state value. Unknown future values are preserved verbatim in [value]. */
+/** A state value emitted only after validation against the current wire protocol. */
 data class FastVoiceState(val value: String) {
     companion object {
         @JvmField val IDLE = FastVoiceState("idle")
@@ -11,7 +11,7 @@ data class FastVoiceState(val value: String) {
         @JvmField val SPEAKING = FastVoiceState("speaking")
         @JvmField val PROMPTING = FastVoiceState("prompting")
 
-        /** Does not normalize, translate, or otherwise change the server value. */
+        /** Maps a value that the caller has already validated against the current protocol. */
         @JvmStatic
         fun fromRaw(value: String): FastVoiceState = when (value) {
             IDLE.value -> IDLE
@@ -50,22 +50,22 @@ sealed class FastVoiceEvent {
 
     data class Error(val error: FastVoiceError) : FastVoiceEvent()
 
-    data class OrderAck(
+    data class SessionAck(
         val action: String,
         val id: String,
         val rev: Long,
     ) : FastVoiceEvent()
 
-    data class TourAck(val id: String) : FastVoiceEvent()
+    data class ContentAck(val id: String) : FastVoiceEvent()
 
     data class PlaybackFinished(
         val playbackId: Int,
-        val tourId: String?,
+        val contentId: String?,
     ) : FastVoiceEvent()
 
     data class PlaybackFailed(
         val playbackId: Int,
-        val tourId: String?,
+        val contentId: String?,
         val code: String,
     ) : FastVoiceEvent()
 }

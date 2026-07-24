@@ -1,14 +1,14 @@
 package com.zxkws.fastvoice.internal
 
-import com.zxkws.fastvoice.OrderSnapshot
+import com.zxkws.fastvoice.SessionSnapshot
 
 /**
- * Connection-aware desired/acknowledged order state.
+ * Connection-aware desired/acknowledged application session state.
  *
  * Desired snapshots may lead the server while an operation is in flight. Only acknowledgements
- * commit [acknowledgedOrder], and only a start acknowledgement makes a new connection audio-ready.
+ * commit [acknowledgedSession], and only a start acknowledgement makes a connection audio-ready.
  */
-internal class OrderOperationState {
+internal class SessionOperationState {
     data class PendingEnd(
         val id: String,
         val rev: Long,
@@ -32,32 +32,32 @@ internal class OrderOperationState {
 
     data class ErrorEffect(
         val matchedCurrent: Boolean = false,
-        val restoreOrderAudio: Boolean = false,
+        val restoreSessionAudio: Boolean = false,
         val restoreCapture: Boolean = false,
     )
 
     private data class OperationKey(val action: String, val id: String, val rev: Long)
 
-    private val pendingSnapshots = linkedMapOf<OperationKey, OrderSnapshot>()
-    private var desiredOrder: OrderSnapshot? = null
-    private var acknowledgedOrder: OrderSnapshot? = null
+    private val pendingSnapshots = linkedMapOf<OperationKey, SessionSnapshot>()
+    private var desiredSession: SessionSnapshot? = null
+    private var acknowledgedSession: SessionSnapshot? = null
     private var acknowledgedAction: String? = null
     private var latestAction: String? = null
     private var pendingEnd: PendingEnd? = null
-    private var connectionOrderReady = false
+    private var connectionSessionReady = false
 
     @Synchronized
-    fun start(snapshot: OrderSnapshot): Acceptance {
-        val current = desiredOrder
+    fun start(snapshot: SessionSnapshot): Acceptance {
+        val current = desiredSession
         if (current != null && current.id != snapshot.id) {
             return Acceptance(
                 accepted = false,
-                errorCode = "order_already_active",
+                errorCode = "session_already_active",
                 errorRef = "active=${current.id} requested=${snapshot.id}",
             )
         }
         if (pendingEnd != null) {
-            return Acceptance(false, errorCode = "order_end_pending", errorRef = snapshot.id)
+            return Acceptance(false, errorCode = "session_end_pending", errorRef = snapshot.id)
         }
         if (current != null) {
             if (latestAction == "start" && current == snapshot) {
@@ -67,30 +67,30 @@ internal class OrderOperationState {
             return Acceptance(
                 accepted = false,
                 errorCode = if (snapshot.rev == current.rev) {
-                    "order_revision_payload_conflict"
+                    "revision_conflict"
                 } else {
-                    "order_start_conflict"
+                    "session_already_active"
                 },
                 errorRef = snapshot.id,
             )
         }
-        desiredOrder = snapshot
-        acknowledgedOrder = null
+        desiredSession = snapshot
+        acknowledgedSession = null
         acknowledgedAction = null
         latestAction = "start"
-        connectionOrderReady = false
+        connectionSessionReady = false
         pendingSnapshots[OperationKey("start", snapshot.id, snapshot.rev)] = snapshot
         return Acceptance(accepted = true)
     }
 
     @Synchronized
-    fun update(snapshot: OrderSnapshot): Acceptance {
-        val current = desiredOrder
+    fun update(snapshot: SessionSnapshot): Acceptance {
+        val current = desiredSession
         if (current == null || current.id != snapshot.id) {
-            return Acceptance(false, errorCode = "order_not_active", errorRef = snapshot.id)
+            return Acceptance(false, errorCode = "session_not_active", errorRef = snapshot.id)
         }
         if (pendingEnd != null) {
-            return Acceptance(false, errorCode = "order_end_pending", errorRef = snapshot.id)
+            return Acceptance(false, errorCode = "session_end_pending", errorRef = snapshot.id)
         }
         if (snapshot.rev == current.rev) {
             if (latestAction == "update" && snapshot == current) {
@@ -99,18 +99,18 @@ internal class OrderOperationState {
             }
             return Acceptance(
                 false,
-                errorCode = "order_revision_payload_conflict",
+                errorCode = "revision_conflict",
                 errorRef = snapshot.rev.toString(),
             )
         }
         if (snapshot.rev < current.rev) {
             return Acceptance(
                 false,
-                errorCode = "order_revision_not_increasing",
+                errorCode = "stale_revision",
                 errorRef = snapshot.rev.toString(),
             )
         }
-        desiredOrder = snapshot
+        desiredSession = snapshot
         latestAction = "update"
         pendingSnapshots[OperationKey("update", snapshot.id, snapshot.rev)] = snapshot
         return Acceptance(accepted = true)
@@ -118,14 +118,14 @@ internal class OrderOperationState {
 
     @Synchronized
     fun end(id: String, rev: Long, reason: String, restoreCapture: Boolean): Acceptance {
-        val current = desiredOrder
+        val current = desiredSession
         if (current == null || current.id != id) {
-            return Acceptance(false, errorCode = "order_not_active", errorRef = id)
+            return Acceptance(false, errorCode = "session_not_active", errorRef = id)
         }
         if (rev <= current.rev) {
             return Acceptance(
                 false,
-                errorCode = "order_revision_not_increasing",
+                errorCode = "stale_revision",
                 errorRef = rev.toString(),
             )
         }
@@ -134,7 +134,7 @@ internal class OrderOperationState {
             return if (existing.id == id && existing.rev == rev && existing.reason == reason) {
                 Acceptance(accepted = true, exactRetry = true)
             } else {
-                Acceptance(false, errorCode = "order_end_pending", errorRef = id)
+                Acceptance(false, errorCode = "session_end_pending", errorRef = id)
             }
         }
         pendingEnd = PendingEnd(id, rev, reason, restoreCapture)
@@ -145,16 +145,16 @@ internal class OrderOperationState {
     /** Invalidates connection-scoped audio authority while retaining desired/acknowledged data. */
     @Synchronized
     fun markConnectionUnready() {
-        connectionOrderReady = false
+        connectionSessionReady = false
         pendingSnapshots.clear()
     }
 
     /** Prepares the desired snapshot as a start on the current fresh connection. */
     @Synchronized
-    fun prepareConnectionStart(): OrderSnapshot? {
-        connectionOrderReady = false
+    fun prepareConnectionStart(): SessionSnapshot? {
+        connectionSessionReady = false
         pendingSnapshots.clear()
-        return desiredOrder?.also {
+        return desiredSession?.also {
             latestAction = "start"
             pendingSnapshots[OperationKey("start", it.id, it.rev)] = it
         }
@@ -165,26 +165,26 @@ internal class OrderOperationState {
         if (action == "end") {
             val end = pendingEnd
             if (end == null || end.id != id || end.rev != rev) return AckEffect()
-            desiredOrder = null
-            acknowledgedOrder = null
+            desiredSession = null
+            acknowledgedSession = null
             acknowledgedAction = null
             latestAction = null
             pendingEnd = null
             pendingSnapshots.clear()
-            connectionOrderReady = false
+            connectionSessionReady = false
             return AckEffect(matched = true, ended = true)
         }
 
         val key = OperationKey(action, id, rev)
         val snapshot = pendingSnapshots.remove(key) ?: return AckEffect()
-        if (desiredOrder?.id != id) return AckEffect()
-        val previous = acknowledgedOrder
+        if (desiredSession?.id != id) return AckEffect()
+        val previous = acknowledgedSession
         if (previous != null && previous.id == id && snapshot.rev < previous.rev) {
             return AckEffect()
         }
-        acknowledgedOrder = snapshot
+        acknowledgedSession = snapshot
         acknowledgedAction = action
-        if (action == "start") connectionOrderReady = true
+        if (action == "start") connectionSessionReady = true
         return AckEffect(
             matched = true,
             startAccepted = action == "start",
@@ -202,59 +202,59 @@ internal class OrderOperationState {
         val end = pendingEnd
         if (end != null && end.id == id && end.rev == rev) {
             pendingEnd = null
-            desiredOrder = acknowledgedOrder ?: desiredOrder
+            desiredSession = acknowledgedSession ?: desiredSession
             latestAction = acknowledgedAction
             pendingSnapshots.keys.removeAll { it.id == id }
             return ErrorEffect(
                 matchedCurrent = true,
-                restoreOrderAudio = connectionOrderReady && desiredOrder != null,
+                restoreSessionAudio = connectionSessionReady && desiredSession != null,
                 restoreCapture = end.restoreCapture,
             )
         }
 
         val failedSnapshotPending = pendingSnapshots.keys.any { it.id == id && it.rev == rev }
         pendingSnapshots.keys.removeAll { it.id == id && it.rev == rev }
-        val desired = desiredOrder
+        val desired = desiredSession
         if (!failedSnapshotPending || desired == null || desired.id != id || desired.rev != rev) {
             return ErrorEffect()
         }
-        if (acknowledgedOrder == null) {
+        if (acknowledgedSession == null) {
             // An end queued behind an initial start can never succeed after that start is
             // rejected. Drop it now so a disconnect between the two server errors cannot leave
             // this reusable client permanently stuck in end-pending state.
             pendingEnd = null
         }
         pendingSnapshots.keys.removeAll { it.id == id && it.rev <= rev }
-        desiredOrder = acknowledgedOrder
+        desiredSession = acknowledgedSession
         latestAction = acknowledgedAction
-        if (desiredOrder == null) connectionOrderReady = false
+        if (desiredSession == null) connectionSessionReady = false
         return ErrorEffect(
             matchedCurrent = true,
-            restoreOrderAudio = connectionOrderReady && desiredOrder != null,
+            restoreSessionAudio = connectionSessionReady && desiredSession != null,
         )
     }
 
     @Synchronized
-    fun desired(): OrderSnapshot? = desiredOrder
+    fun desired(): SessionSnapshot? = desiredSession
 
     @Synchronized
-    fun hasDesiredOrder(): Boolean = desiredOrder != null
+    fun hasDesiredSession(): Boolean = desiredSession != null
 
     @Synchronized
-    fun captureAllowed(): Boolean = OrderAudioPolicy.captureAllowed(
-        hasActiveOrder = desiredOrder != null,
+    fun captureAllowed(): Boolean = SessionAudioPolicy.captureAllowed(
+        hasActiveSession = desiredSession != null,
         endPending = pendingEnd != null,
-        orderAcknowledgedOnConnection = connectionOrderReady,
+        sessionAcknowledgedOnConnection = connectionSessionReady,
     )
 
     @Synchronized
     fun wakeKwsEnabled(started: Boolean, ready: Boolean, wakeRequested: Boolean): Boolean =
-        OrderAudioPolicy.wakeKwsEnabled(
+        SessionAudioPolicy.wakeKwsEnabled(
             started = started,
             ready = ready,
             wakeRequested = wakeRequested,
-            hasActiveOrder = desiredOrder != null,
+            hasActiveSession = desiredSession != null,
             endPending = pendingEnd != null,
-            orderAcknowledgedOnConnection = connectionOrderReady,
+            sessionAcknowledgedOnConnection = connectionSessionReady,
         )
 }

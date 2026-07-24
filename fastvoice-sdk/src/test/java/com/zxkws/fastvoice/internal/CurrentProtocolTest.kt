@@ -48,4 +48,11 @@ class CurrentProtocolTest {
         assertTrue("capture.start" in CurrentProtocol.CONTROL_ACTIONS)
         assertTrue(CurrentProtocol.MAX_CAPTURE_PRE_ROLL_MS == 1_800)
     }
+
+    @Test
+    fun sessionRevisionsStartAtOne() {
+        assertFalse(CurrentProtocol.acceptsSessionRevision(null))
+        assertFalse(CurrentProtocol.acceptsSessionRevision(0))
+        assertTrue(CurrentProtocol.acceptsSessionRevision(1))
+    }
 }

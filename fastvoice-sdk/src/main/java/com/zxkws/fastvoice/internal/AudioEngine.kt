@@ -305,7 +305,7 @@ internal class AudioEngine(
         }
     }
 
-    /** Enables wake KWS for an active order; playback still enables CONTROL independently. */
+    /** Enables wake KWS for an active session; playback still enables CONTROL independently. */
     fun setKwsSessionEnabled(enabled: Boolean) {
         val previous = kwsSessionEnabled.getAndSet(enabled)
         if (!enabled) {

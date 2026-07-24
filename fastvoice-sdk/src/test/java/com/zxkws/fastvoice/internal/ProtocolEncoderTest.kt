@@ -1,6 +1,8 @@
 package com.zxkws.fastvoice.internal
 
-import com.zxkws.fastvoice.OrderSnapshot
+import com.zxkws.fastvoice.ContentRequest
+import com.zxkws.fastvoice.SessionRef
+import com.zxkws.fastvoice.SessionSnapshot
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -18,43 +20,50 @@ class ProtocolEncoderTest {
     }
 
     @Test
-    fun orderSnapshotsAreCompleteTypedMessages() {
-        val snapshot = OrderSnapshot(
-            "o1",
+    fun sessionSnapshotsAreCompleteTypedMessages() {
+        val snapshot = SessionSnapshot(
+            "s1",
             2,
-            linkedMapOf("park_id" to "p1", "passenger_count" to 3),
+            linkedMapOf("locale" to "zh-CN", "participant_count" to 3),
         )
 
         assertEquals(
-            "{\"type\":\"order.start\",\"id\":\"o1\",\"rev\":2," +
-                "\"context\":{\"park_id\":\"p1\",\"passenger_count\":3}}",
-            ProtocolEncoder.orderStart(snapshot),
+            "{\"type\":\"session.start\",\"id\":\"s1\",\"rev\":2," +
+                "\"attributes\":{\"locale\":\"zh-CN\",\"participant_count\":3}}",
+            ProtocolEncoder.sessionStart(snapshot),
         )
         assertEquals(
-            "{\"type\":\"order.update\",\"id\":\"o1\",\"rev\":2," +
-                "\"context\":{\"park_id\":\"p1\",\"passenger_count\":3}}",
-            ProtocolEncoder.orderUpdate(snapshot),
+            "{\"type\":\"session.update\",\"id\":\"s1\",\"rev\":2," +
+                "\"attributes\":{\"locale\":\"zh-CN\",\"participant_count\":3}}",
+            ProtocolEncoder.sessionUpdate(snapshot),
         )
         assertEquals(
-            "{\"type\":\"order.end\",\"id\":\"o1\",\"rev\":3,\"reason\":\"completed\"}",
-            ProtocolEncoder.orderEnd("o1", 3, "completed"),
+            "{\"type\":\"session.end\",\"id\":\"s1\",\"rev\":3,\"reason\":\"completed\"}",
+            ProtocolEncoder.sessionEnd("s1", 3, "completed"),
         )
     }
 
     @Test
-    fun arrivalAndCruiseHaveDifferentExactShapes() {
+    fun contentRequestsHaveExactBoundAndUnboundShapes() {
         assertEquals(
-            "{\"type\":\"tour.play\",\"id\":\"a1\",\"source\":\"arrival\"," +
-                "\"content\":\"arrival_prompt\",\"order_id\":\"o1\",\"order_rev\":2," +
-                "\"spot_id\":\"s1\"}",
-            ProtocolEncoder.tourPlay(
-                "a1", "arrival", "arrival_prompt", "o1", 2, "s1",
+            "{\"type\":\"content.play\",\"id\":\"c1\",\"key\":\"welcome\"," +
+                "\"attributes\":{\"variant\":\"short\"},\"session_id\":\"s1\"," +
+                "\"session_rev\":2}",
+            ProtocolEncoder.contentPlay(
+                ContentRequest(
+                    "c1",
+                    "welcome",
+                    SessionRef("s1", 2),
+                    mapOf("variant" to "short"),
+                ),
             ),
         )
         assertEquals(
-            "{\"type\":\"tour.play\",\"id\":\"c1\",\"source\":\"cruise\"," +
-                "\"content\":\"park_welcome\"}",
-            ProtocolEncoder.tourPlay("c1", "cruise", "park_welcome"),
+            "{\"type\":\"content.play\",\"id\":\"c2\",\"key\":\"idle_message\"," +
+                "\"attributes\":{}}",
+            ProtocolEncoder.contentPlay(
+                ContentRequest("c2", "idle_message", null, emptyMap()),
+            ),
         )
     }
 

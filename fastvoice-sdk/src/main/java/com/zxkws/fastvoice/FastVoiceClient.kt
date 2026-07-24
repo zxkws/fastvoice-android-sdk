@@ -10,11 +10,12 @@ import android.os.Looper
 import com.zxkws.fastvoice.internal.AndroidTextToSpeechPromptPlayer
 import com.zxkws.fastvoice.internal.AudioEngine
 import com.zxkws.fastvoice.internal.ClientSessionEpoch
+import com.zxkws.fastvoice.internal.ContentRequestState
 import com.zxkws.fastvoice.internal.CurrentProtocol
 import com.zxkws.fastvoice.internal.FallbackPromptPlayer
 import com.zxkws.fastvoice.internal.LocalCommandPrePauseState
 import com.zxkws.fastvoice.internal.LocalCommandTimeoutPolicy
-import com.zxkws.fastvoice.internal.OrderOperationState
+import com.zxkws.fastvoice.internal.SessionOperationState
 import com.zxkws.fastvoice.internal.PlaybackTerminalState
 import com.zxkws.fastvoice.internal.ProtocolEncoder
 import com.zxkws.fastvoice.internal.ReadyMessage
@@ -71,9 +72,10 @@ class FastVoiceClient @JvmOverloads constructor(
         LocalCommandTimeoutPolicy.DEFAULT_SERVER_TIMEOUT_MS,
     )
 
-    private val orderState = OrderOperationState()
-    private val orderSendLock = Any()
-    private var playbackTourId: String? = null
+    private val sessionState = SessionOperationState()
+    private val sessionSendLock = Any()
+    private val contentRequestState = ContentRequestState()
+    private var playbackContentId: String? = null
 
     private val localFallbackActive = AtomicBoolean(false)
     private val localFallbackGeneration = AtomicLong(0)
@@ -210,9 +212,9 @@ class FastVoiceClient @JvmOverloads constructor(
     fun stop() {
         if (!started.compareAndSet(true, false)) return
         sessions.invalidate()
-        synchronized(orderSendLock) {
+        synchronized(sessionSendLock) {
             ready.set(false)
-            orderState.markConnectionUnready()
+            sessionState.markConnectionUnready()
         }
         reconnectFuture?.cancel(false)
         reconnectFuture = null
@@ -233,13 +235,17 @@ class FastVoiceClient @JvmOverloads constructor(
     }
 
     /**
-     * Starts one order. The snapshot is retained and resent as order.start after reconnect.
+     * Starts one application session. The snapshot is retained and resent after reconnect.
      *
      * `true` means the SDK accepted the desired state, including while disconnected; only
-     * [FastVoiceEvent.OrderAck] means the server accepted it.
+     * [FastVoiceEvent.SessionAck] means the server accepted it.
      */
-    fun startOrder(snapshot: OrderSnapshot): Boolean = synchronized(orderSendLock) {
-        val acceptance = orderState.start(snapshot)
+    fun startSession(snapshot: SessionSnapshot): Boolean = synchronized(sessionSendLock) {
+        if (closed.get()) {
+            emitLocalError("client_closed", snapshot.id)
+            return@synchronized false
+        }
+        val acceptance = sessionState.start(snapshot)
         if (!acceptance.accepted) {
             emitLocalError(requireNotNull(acceptance.errorCode), acceptance.errorRef)
             return@synchronized false
@@ -248,38 +254,46 @@ class FastVoiceClient @JvmOverloads constructor(
             syncKwsSession()
             invalidatePlayback()
         }
-        sendIfReady(ProtocolEncoder.orderStart(snapshot))
+        sendIfReady(ProtocolEncoder.sessionStart(snapshot))
         true
     }
 
     /**
-     * Replaces the complete context of the active order.
+     * Replaces all attributes of the active application session.
      *
      * `true` means accepted by the SDK. Delivery may wait for ready/reconnect.
      */
-    fun updateOrder(snapshot: OrderSnapshot): Boolean = synchronized(orderSendLock) {
-        val acceptance = orderState.update(snapshot)
+    fun updateSession(snapshot: SessionSnapshot): Boolean = synchronized(sessionSendLock) {
+        if (closed.get()) {
+            emitLocalError("client_closed", snapshot.id)
+            return@synchronized false
+        }
+        val acceptance = sessionState.update(snapshot)
         if (!acceptance.accepted) {
             emitLocalError(requireNotNull(acceptance.errorCode), acceptance.errorRef)
             return@synchronized false
         }
-        sendIfReady(ProtocolEncoder.orderUpdate(snapshot))
+        sendIfReady(ProtocolEncoder.sessionUpdate(snapshot))
         true
     }
 
     /**
-     * Ends the active order. The request remains retryable across reconnect until order.ack.
+     * Ends the active application session. The request remains retryable across reconnect.
      *
      * `true` means accepted by the SDK, not acknowledged by the server.
      */
     @JvmOverloads
-    fun endOrder(
+    fun endSession(
         id: String,
         rev: Long,
         reason: String = "completed",
-    ): Boolean = synchronized(orderSendLock) {
-        require(reason.isNotBlank()) { "order end reason must not be blank" }
-        val acceptance = orderState.end(id, rev, reason, audio.isUplinkEnabled())
+    ): Boolean = synchronized(sessionSendLock) {
+        require(reason.isNotBlank()) { "session end reason must not be blank" }
+        if (closed.get()) {
+            emitLocalError("client_closed", id)
+            return@synchronized false
+        }
+        val acceptance = sessionState.end(id, rev, reason, audio.isUplinkEnabled())
         if (!acceptance.accepted) {
             emitLocalError(requireNotNull(acceptance.errorCode), acceptance.errorRef)
             return@synchronized false
@@ -288,66 +302,54 @@ class FastVoiceClient @JvmOverloads constructor(
             audio.stopCapture()
             syncKwsSession()
             invalidatePlayback()
+            cancelPendingContent()
         }
-        sendIfReady(ProtocolEncoder.orderEnd(id, rev, reason))
+        sendIfReady(ProtocolEncoder.sessionEnd(id, rev, reason))
         true
     }
 
-    /** Requests an arrival announcement bound to one exact active order snapshot. */
-    @JvmOverloads
-    fun playArrival(
-        id: String,
-        orderId: String,
-        orderRev: Long,
-        spotId: String,
-        content: String = "arrival_prompt",
-    ): Boolean = synchronized(orderSendLock) {
-        require(id.isNotBlank()) { "tour id must not be blank" }
-        require(orderId.isNotBlank()) { "orderId must not be blank" }
-        require(orderRev >= 0) { "orderRev must be non-negative" }
-        require(spotId.isNotBlank()) { "spotId must not be blank" }
-        require(content.isNotBlank()) { "tour content must not be blank" }
-        val order = orderState.desired()
-        if (order == null || order.id != orderId || order.rev != orderRev ||
-            order.context["current_spot_id"] != spotId
+    /**
+     * Requests server-owned content. Keys and attributes are opaque to the SDK.
+     *
+     * A request carrying [ContentRequest.session] must refer to the current desired snapshot.
+     * An unbound request is valid regardless of whether an application session is active.
+     */
+    fun playContent(request: ContentRequest): Boolean = synchronized(sessionSendLock) {
+        if (closed.get()) {
+            emitLocalError("client_closed", request.id)
+            return@synchronized false
+        }
+        val requestedSession = request.session
+        val desiredSession = sessionState.desired()
+        if (requestedSession != null &&
+            (desiredSession == null ||
+                desiredSession.id != requestedSession.id ||
+                desiredSession.rev != requestedSession.rev)
         ) {
-            emitLocalError("arrival_order_mismatch", id)
+            emitLocalError("session_snapshot_mismatch", request.id)
             return@synchronized false
         }
-        sendTour(id, "arrival", content, orderId, orderRev, spotId)
-    }
-
-    /** Requests a fixed idle-cruise announcement while no order is active. */
-    fun playCruise(id: String, content: String): Boolean = synchronized(orderSendLock) {
-        require(id.isNotBlank()) { "tour id must not be blank" }
-        require(content.isNotBlank()) { "tour content must not be blank" }
-        if (orderState.hasDesiredOrder()) {
-            emitLocalError("cruise_order_active", id)
+        if (contentRequestState.enqueue(request) == ContentRequestState.EnqueueResult.ID_CONFLICT) {
+            emitLocalError("content_id_reused", request.id)
             return@synchronized false
         }
-        sendTour(id, "cruise", content, null, null, null)
+        sendIfReady(ProtocolEncoder.contentPlay(request))
+        true
     }
 
-    private fun sendTour(
-        id: String,
-        source: String,
-        content: String,
-        orderId: String?,
-        orderRev: Long?,
-        spotId: String?,
-    ): Boolean {
-        val current = socket.get()?.takeIf { started.get() && ready.get() } ?: run {
-            emitLocalError("tour_transport_unavailable", id)
-            return false
-        }
-        if (!current.send(
-                ProtocolEncoder.tourPlay(id, source, content, orderId, orderRev, spotId),
+    private fun cancelPendingContent() {
+        contentRequestState.cancelAll().forEach {
+            emit(
+                FastVoiceEvent.Error(
+                    FastVoiceError(
+                        scope = "sdk",
+                        ref = it.id,
+                        code = "content_cancelled_session_end",
+                        recoverable = false,
+                    ),
+                ),
             )
-        ) {
-            emitLocalError("tour_send_failed", id)
-            return false
         }
-        return true
     }
 
     @Synchronized
@@ -461,8 +463,8 @@ class FastVoiceClient @JvmOverloads constructor(
         when (type) {
             "state" -> handleState(message)
             "transcript" -> handleTranscript(message)
-            "order.ack" -> handleOrderAck(message)
-            "tour.ack" -> handleTourAck(message)
+            "session.ack" -> handleSessionAck(message)
+            "content.ack" -> handleContentAck(message)
             "playback.start" -> handlePlaybackStart(message)
             "playback.end" -> handlePlaybackEnd(message)
             "control" -> handleControl(message)
@@ -494,11 +496,14 @@ class FastVoiceClient @JvmOverloads constructor(
         val immutable = Collections.unmodifiableList(ArrayList(active))
         wakeWords.set(immutable)
         audio.setWakeWords(active)
-        synchronized(orderSendLock) {
+        synchronized(sessionSendLock) {
             ready.set(true)
             reconnectAttempt.set(0)
-            orderState.prepareConnectionStart()?.let {
-                sendIfReady(ProtocolEncoder.orderStart(it))
+            sessionState.prepareConnectionStart()?.let {
+                sendIfReady(ProtocolEncoder.sessionStart(it))
+            }
+            contentRequestState.pending().forEach {
+                sendIfReady(ProtocolEncoder.contentPlay(it))
             }
         }
     }
@@ -524,25 +529,25 @@ class FastVoiceClient @JvmOverloads constructor(
         emit(FastVoiceEvent.Transcript(requireNotNull(role), text, final))
     }
 
-    private fun handleOrderAck(message: JSONObject) {
+    private fun handleSessionAck(message: JSONObject) {
         val action = message.strictString("action")
         val id = message.strictString("id")
         val rev = message.strictLong("rev")
         if (action !in setOf("start", "update", "end") || id.isNullOrBlank() ||
-            rev == null || rev < 0L
+            !CurrentProtocol.acceptsSessionRevision(rev)
         ) {
-            terminateProtocol("invalid_order_ack")
+            terminateProtocol("invalid_session_ack")
             return
         }
-        val effect = synchronized(orderSendLock) {
-            orderState.acknowledge(requireNotNull(action), id, rev).also {
+        val effect = synchronized(sessionSendLock) {
+            sessionState.acknowledge(requireNotNull(action), id, requireNotNull(rev)).also {
                 it.pendingEnd?.let { end ->
-                    sendIfReady(ProtocolEncoder.orderEnd(end.id, end.rev, end.reason))
+                    sendIfReady(ProtocolEncoder.sessionEnd(end.id, end.rev, end.reason))
                 }
             }
         }
         if (!effect.matched) {
-            log(FastVoiceLogLevel.WARN, "ignored stale order acknowledgement")
+            log(FastVoiceLogLevel.WARN, "ignored stale session acknowledgement")
             return
         }
         if (effect.ended) {
@@ -553,27 +558,34 @@ class FastVoiceClient @JvmOverloads constructor(
             syncKwsSession()
             audio.setWakeArmed(canArmWake())
         }
-        emit(FastVoiceEvent.OrderAck(requireNotNull(action), id, rev))
+        emit(FastVoiceEvent.SessionAck(requireNotNull(action), id, requireNotNull(rev)))
     }
 
-    private fun handleTourAck(message: JSONObject) {
+    private fun handleContentAck(message: JSONObject) {
         val id = message.strictString("id")
         if (id.isNullOrBlank()) {
-            terminateProtocol("invalid_tour_ack")
+            terminateProtocol("invalid_content_ack")
             return
         }
-        emit(FastVoiceEvent.TourAck(id))
+        val matched = synchronized(sessionSendLock) {
+            contentRequestState.complete(id)
+        }
+        if (!matched) {
+            log(FastVoiceLogLevel.WARN, "ignored stale content acknowledgement")
+            return
+        }
+        emit(FastVoiceEvent.ContentAck(id))
     }
 
     private fun handlePlaybackStart(message: JSONObject) {
         val id = message.strictInt("id")
         val kind = message.strictString("kind")
-        val tourId = when {
-            !message.has("tour_id") -> null
-            message.isNull("tour_id") -> ""
-            else -> message.strictString("tour_id")?.takeIf(String::isNotBlank)
+        val contentId = when {
+            !message.has("content_id") -> null
+            message.isNull("content_id") -> ""
+            else -> message.strictString("content_id")?.takeIf(String::isNotBlank)
         }
-        if (id == null || id < 0 || kind.isNullOrBlank() || tourId == null) {
+        if (id == null || id < 0 || kind.isNullOrBlank() || contentId == null) {
             terminateProtocol("invalid_playback_start")
             return
         }
@@ -581,7 +593,7 @@ class FastVoiceClient @JvmOverloads constructor(
         synchronized(playbackControlLock) {
             clearLocalCommandPrePauseLocked(resume = false)
             playbackId.set(id)
-            playbackTourId = tourId.takeIf(String::isNotEmpty)
+            playbackContentId = contentId.takeIf(String::isNotEmpty)
             val epoch = playbackEpoch.incrementAndGet()
             playbackTerminalState.begin(id, epoch)
             serverPlaybackPaused.set(false)
@@ -609,8 +621,8 @@ class FastVoiceClient @JvmOverloads constructor(
         val applied = when (action) {
             "capture.start" -> {
                 val preRollMs = message.strictInt("pre_roll_ms")
-                if (!isOrderCaptureAllowed()) {
-                    code = "order_inactive"
+                if (!isSessionCaptureAllowed()) {
+                    code = "session_inactive"
                     false
                 } else if (preRollMs == null || preRollMs < 0) {
                     code = "invalid_pre_roll"
@@ -669,7 +681,7 @@ class FastVoiceClient @JvmOverloads constructor(
             val epoch = playbackEpoch.incrementAndGet()
             playbackTerminalState.invalidate(target, epoch)
             playbackId.set(-1)
-            playbackTourId = null
+            playbackContentId = null
             serverPlaybackPaused.set(false)
             audio.interruptPlayback()
             audio.setPromptPlayback(false)
@@ -714,23 +726,27 @@ class FastVoiceClient @JvmOverloads constructor(
         val recoverable = message.strictBoolean("recoverable")
         val rev = message.strictLong("rev")
         if (scope.isNullOrBlank() || code.isNullOrBlank() || recoverable == null ||
-            (scope == "order" && (rev == null || rev < 0L))
+            (scope == "session" && !CurrentProtocol.acceptsSessionRevision(rev))
         ) {
             terminateProtocol("invalid_error")
             return
         }
-        if (scope == "order") {
-            val effect = synchronized(orderSendLock) {
-                orderState.fail(message.nullableString("ref"), requireNotNull(rev))
+        if (scope == "session") {
+            val effect = synchronized(sessionSendLock) {
+                sessionState.fail(message.nullableString("ref"), requireNotNull(rev))
             }
             if (effect.matchedCurrent) {
                 syncKwsSession()
-                if (effect.restoreOrderAudio && effect.restoreCapture) {
+                if (effect.restoreSessionAudio && effect.restoreCapture) {
                     audio.setWakeArmed(false)
                     audio.startCapture(0)
                 } else {
                     audio.setWakeArmed(canArmWake())
                 }
+            }
+        } else if (scope == "content") {
+            synchronized(sessionSendLock) {
+                message.nullableString("ref")?.let(contentRequestState::complete)
             }
         }
         val error = FastVoiceError(
@@ -856,14 +872,14 @@ class FastVoiceClient @JvmOverloads constructor(
 
     private fun handlePlaybackFinished(id: Int) {
         var finished = false
-        var tourId: String? = null
+        var contentId: String? = null
         synchronized(playbackControlLock) {
             val epoch = playbackEpoch.get()
             if (id == playbackId.get() && playbackTerminalState.finish(id, epoch)) {
                 clearLocalCommandPrePauseLocked(resume = false)
                 playbackId.set(-1)
-                tourId = playbackTourId
-                playbackTourId = null
+                contentId = playbackContentId
+                playbackContentId = null
                 serverPlaybackPaused.set(false)
                 audio.setPromptPlayback(false)
                 audio.setWakeArmed(canArmWake())
@@ -872,15 +888,15 @@ class FastVoiceClient @JvmOverloads constructor(
         }
         if (finished) {
             socket.get()?.takeIf { ready.get() }?.send(ProtocolEncoder.playbackFinished(id))
-            emit(FastVoiceEvent.PlaybackFinished(id, tourId))
-            tourId?.let { log(FastVoiceLogLevel.DEBUG, "tour playback finished: $it") }
+            emit(FastVoiceEvent.PlaybackFinished(id, contentId))
+            contentId?.let { log(FastVoiceLogLevel.DEBUG, "content playback finished: $it") }
         }
     }
 
     private fun handlePlaybackFailed(id: Int, reason: String) {
         val code = playbackFailureCode(reason)
         var report = false
-        var tourId: String? = null
+        var contentId: String? = null
         synchronized(playbackControlLock) {
             val epoch = playbackEpoch.get()
             if (id != playbackId.get()) return
@@ -889,8 +905,8 @@ class FastVoiceClient @JvmOverloads constructor(
             ) {
                 clearLocalCommandPrePauseLocked(resume = false)
                 playbackId.set(-1)
-                tourId = playbackTourId
-                playbackTourId = null
+                contentId = playbackContentId
+                playbackContentId = null
                 serverPlaybackPaused.set(false)
                 audio.setPromptPlayback(false)
                 audio.setWakeArmed(canArmWake())
@@ -899,15 +915,15 @@ class FastVoiceClient @JvmOverloads constructor(
         }
         if (report) {
             socket.get()?.takeIf { ready.get() }?.send(ProtocolEncoder.playbackFailed(id, code))
-            emit(FastVoiceEvent.PlaybackFailed(id, tourId, code))
-            tourId?.let { log(FastVoiceLogLevel.DEBUG, "tour playback failed: $it code=$code") }
+            emit(FastVoiceEvent.PlaybackFailed(id, contentId, code))
+            contentId?.let { log(FastVoiceLogLevel.DEBUG, "content playback failed: $it code=$code") }
         }
     }
 
     private fun invalidatePlayback() {
         synchronized(playbackControlLock) {
             val current = playbackId.getAndSet(-1)
-            playbackTourId = null
+            playbackContentId = null
             val epoch = playbackEpoch.incrementAndGet()
             if (current >= 0) playbackTerminalState.invalidate(current, epoch)
             clearLocalCommandPrePauseLocked(resume = false)
@@ -925,13 +941,13 @@ class FastVoiceClient @JvmOverloads constructor(
         started.get() && ready.get() && config.wakeEnabled &&
             wakeWords.get().isNotEmpty() && playbackId.get() < 0 &&
             !localFallbackActive.get() && !audio.isUplinkEnabled() &&
-            isOrderCaptureAllowed()
+            isSessionCaptureAllowed()
 
-    private fun isOrderCaptureAllowed(): Boolean = orderState.captureAllowed()
+    private fun isSessionCaptureAllowed(): Boolean = sessionState.captureAllowed()
 
     private fun syncKwsSession() {
         audio.setKwsSessionEnabled(
-            orderState.wakeKwsEnabled(
+            sessionState.wakeKwsEnabled(
                 started = started.get(),
                 ready = ready.get(),
                 wakeRequested = config.wakeEnabled,
@@ -984,9 +1000,9 @@ class FastVoiceClient @JvmOverloads constructor(
         sessions.runIfCurrent(session) {
             current = socket.compareAndSet(webSocket, null)
             if (current) {
-                synchronized(orderSendLock) {
+                synchronized(sessionSendLock) {
                     ready.set(false)
-                    orderState.markConnectionUnready()
+                    sessionState.markConnectionUnready()
                 }
                 wakeWords.set(emptyList())
                 audio.setKwsSessionEnabled(false)
@@ -1003,9 +1019,9 @@ class FastVoiceClient @JvmOverloads constructor(
 
     private fun terminateProtocol(code: String, cause: Throwable? = null) {
         emitLocalError(code, cause?.message, cause)
-        synchronized(orderSendLock) {
+        synchronized(sessionSendLock) {
             ready.set(false)
-            orderState.markConnectionUnready()
+            sessionState.markConnectionUnready()
         }
         audio.setKwsSessionEnabled(false)
         audio.setWakeArmed(false)

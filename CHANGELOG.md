@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.0 — 2026-07-24
+
+- 公共 API 收敛为通用 `SessionSnapshot`、`SessionRef`、`ContentRequest`，并删除
+  `OrderSnapshot`、`startOrder/updateOrder/endOrder`、`playArrival/playCruise`，
+  不保留未上线版本的兼容层。
+- wire 收敛为 `session.start/update/end`、`session.ack`、`content.play`、
+  `content.ack` 和 `playback.start.content_id`；SDK 不解释业务 key 或 attributes。
+- 会话完整快照支持正整数 revision、精确幂等、错误回滚和断线恢复；未确认的内容请求
+  在恢复 session 后按原始顺序重发，同 ID 异 payload 会被拒绝。
+- `endSession` 立即停止音频并取消所有未确认内容；播放事件通过可空 `contentId`
+  区分内容请求与普通语音回复。
+- attributes 的 JSON 大小、深度、节点数、集合长度、字符串长度和控制字符限制与
+  服务端协议一致。
+- 保留 0.4 的端侧唤醒、播放期控制词、Opus 上下行、播放终态和录音恢复能力。
+
 ## 0.4.0 — 2026-07-24
 
 - SDK 只实现新的 `/ws` 协议：必需设备请求头鉴权、`hello/ready` 握手和固定

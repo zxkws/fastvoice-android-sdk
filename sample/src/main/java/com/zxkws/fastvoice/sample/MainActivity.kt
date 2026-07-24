@@ -13,11 +13,13 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import com.zxkws.fastvoice.DeviceTokenProvider
+import com.zxkws.fastvoice.ContentRequest
 import com.zxkws.fastvoice.FastVoiceClient
 import com.zxkws.fastvoice.FastVoiceConfig
 import com.zxkws.fastvoice.FastVoiceEvent
 import com.zxkws.fastvoice.FastVoiceListener
-import com.zxkws.fastvoice.OrderSnapshot
+import com.zxkws.fastvoice.SessionRef
+import com.zxkws.fastvoice.SessionSnapshot
 
 /**
  * SDK 的最小接入示例页面。
@@ -28,27 +30,28 @@ class MainActivity : Activity() {
 
     private companion object {
         const val RECORD_AUDIO_REQUEST = 1001
-        const val SAMPLE_ORDER_ID = "sample-order"
+        const val SAMPLE_SESSION_ID = "sample-session"
     }
 
     private lateinit var endpointInput: EditText
     private lateinit var deviceIdInput: EditText
     private lateinit var tokenInput: EditText
-    private lateinit var spotIdInput: EditText
+    private lateinit var attributeInput: EditText
+    private lateinit var contentKeyInput: EditText
 
     private lateinit var startButton: Button
     private lateinit var stopButton: Button
     private lateinit var interruptButton: Button
-    private lateinit var startOrderButton: Button
-    private lateinit var arrivalButton: Button
-    private lateinit var endOrderButton: Button
+    private lateinit var startSessionButton: Button
+    private lateinit var contentButton: Button
+    private lateinit var endSessionButton: Button
 
     private lateinit var stateValue: TextView
     private lateinit var asrValue: TextView
     private lateinit var replyValue: TextView
     private lateinit var errorValue: TextView
-    private lateinit var orderResultValue: TextView
-    private lateinit var tourResultValue: TextView
+    private lateinit var sessionResultValue: TextView
+    private lateinit var contentResultValue: TextView
     private lateinit var playbackResultValue: TextView
 
     private var voiceClient: FastVoiceClient? = null
@@ -63,15 +66,15 @@ class MainActivity : Activity() {
                     renderReply(event.text)
                 }
             }
-            is FastVoiceEvent.Error -> renderError(event.error.code.orEmpty())
-            is FastVoiceEvent.OrderAck ->
-                runOnUiThread { orderResultValue.text = event.action }
-            is FastVoiceEvent.TourAck ->
-                runOnUiThread { tourResultValue.text = event.id }
+            is FastVoiceEvent.Error -> renderError(event.error.toString())
+            is FastVoiceEvent.SessionAck ->
+                runOnUiThread { sessionResultValue.text = event.toString() }
+            is FastVoiceEvent.ContentAck ->
+                runOnUiThread { contentResultValue.text = event.toString() }
             is FastVoiceEvent.PlaybackFinished ->
-                runOnUiThread { playbackResultValue.text = event.tourId.orEmpty() }
+                runOnUiThread { playbackResultValue.text = event.toString() }
             is FastVoiceEvent.PlaybackFailed ->
-                runOnUiThread { playbackResultValue.text = event.code }
+                runOnUiThread { playbackResultValue.text = event.toString() }
         }
     }
 
@@ -86,9 +89,9 @@ class MainActivity : Activity() {
         startButton.setOnClickListener { startVoice() }
         stopButton.setOnClickListener { voiceClient?.stop() }
         interruptButton.setOnClickListener { voiceClient?.interrupt() }
-        startOrderButton.setOnClickListener { startSampleOrder() }
-        arrivalButton.setOnClickListener { playSampleArrival() }
-        endOrderButton.setOnClickListener { voiceClient?.endOrder(SAMPLE_ORDER_ID, 2) }
+        startSessionButton.setOnClickListener { startSampleSession() }
+        contentButton.setOnClickListener { playSampleContent() }
+        endSessionButton.setOnClickListener { voiceClient?.endSession(SAMPLE_SESSION_ID, 2) }
     }
 
     private fun startVoice() {
@@ -125,32 +128,34 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun startSampleOrder() {
-        val spotId = spotIdInput.text.toString().trim()
-        if (spotId.isBlank()) {
-            renderError("spot id is required")
+    private fun startSampleSession() {
+        val attribute = attributeInput.text.toString()
+        if (attribute.isBlank()) {
+            renderError("attribute value is required")
             return
         }
-        voiceClient?.startOrder(
-            OrderSnapshot(
-                id = SAMPLE_ORDER_ID,
+        voiceClient?.startSession(
+            SessionSnapshot(
+                id = SAMPLE_SESSION_ID,
                 rev = 1,
-                context = mapOf("current_spot_id" to spotId),
+                attributes = mapOf("sample_value" to attribute),
             ),
         )
     }
 
-    private fun playSampleArrival() {
-        val spotId = spotIdInput.text.toString().trim()
-        if (spotId.isBlank()) {
-            renderError("spot id is required")
+    private fun playSampleContent() {
+        val key = contentKeyInput.text.toString().trim()
+        if (key.isBlank()) {
+            renderError("content key is required")
             return
         }
-        voiceClient?.playArrival(
-            id = "sample-arrival",
-            orderId = SAMPLE_ORDER_ID,
-            orderRev = 1,
-            spotId = spotId,
+        voiceClient?.playContent(
+            ContentRequest(
+                id = "sample-content",
+                key = key,
+                session = SessionRef(SAMPLE_SESSION_ID, 1),
+                attributes = emptyMap(),
+            ),
         )
     }
 
@@ -214,21 +219,22 @@ class MainActivity : Activity() {
         tokenInput = input("device token (test only)").apply {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
         }
-        spotIdInput = input("spot id")
+        attributeInput = input("sample attribute value")
+        contentKeyInput = input("content key")
 
         startButton = button("Start")
         stopButton = button("Stop")
         interruptButton = button("Interrupt")
-        startOrderButton = button("Start order")
-        arrivalButton = button("Arrival")
-        endOrderButton = button("End order")
+        startSessionButton = button("Start session")
+        contentButton = button("Play content")
+        endSessionButton = button("End session")
 
         stateValue = output()
         asrValue = output()
         replyValue = output()
         errorValue = output()
-        orderResultValue = output()
-        tourResultValue = output()
+        sessionResultValue = output()
+        contentResultValue = output()
         playbackResultValue = output()
 
         val content = LinearLayout(this).apply {
@@ -242,15 +248,17 @@ class MainActivity : Activity() {
             addView(label("Token"))
             addView(tokenInput)
             addView(buttonRow(startButton, stopButton, interruptButton))
-            addView(label("Spot ID"))
-            addView(spotIdInput)
-            addView(buttonRow(startOrderButton, arrivalButton, endOrderButton))
+            addView(label("Session attribute"))
+            addView(attributeInput)
+            addView(label("Content key"))
+            addView(contentKeyInput)
+            addView(buttonRow(startSessionButton, contentButton, endSessionButton))
             addView(rawOutput("state", stateValue, gap))
             addView(rawOutput("asr", asrValue, gap))
             addView(rawOutput("reply", replyValue, gap))
             addView(rawOutput("error", errorValue, gap))
-            addView(rawOutput("orderResult", orderResultValue, gap))
-            addView(rawOutput("tourResult", tourResultValue, gap))
+            addView(rawOutput("sessionResult", sessionResultValue, gap))
+            addView(rawOutput("contentResult", contentResultValue, gap))
             addView(rawOutput("playbackResult", playbackResultValue, gap))
         }
 

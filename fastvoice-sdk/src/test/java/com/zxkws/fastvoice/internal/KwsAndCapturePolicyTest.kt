@@ -81,49 +81,49 @@ class KwsAndCapturePolicyTest {
     }
 
     @Test
-    fun idleAndEndingOrdersCannotCaptureOrArmWakeKws() {
+    fun idleAndEndingSessionsCannotCaptureOrArmWakeKws() {
         assertFalse(
-            OrderAudioPolicy.captureAllowed(
-                hasActiveOrder = false,
+            SessionAudioPolicy.captureAllowed(
+                hasActiveSession = false,
                 endPending = false,
-                orderAcknowledgedOnConnection = false,
+                sessionAcknowledgedOnConnection = false,
             ),
         )
         assertFalse(
-            OrderAudioPolicy.captureAllowed(
-                hasActiveOrder = true,
+            SessionAudioPolicy.captureAllowed(
+                hasActiveSession = true,
                 endPending = true,
-                orderAcknowledgedOnConnection = true,
+                sessionAcknowledgedOnConnection = true,
             ),
         )
         assertFalse(
-            OrderAudioPolicy.wakeKwsEnabled(
+            SessionAudioPolicy.wakeKwsEnabled(
                 started = true,
                 ready = true,
                 wakeRequested = true,
-                hasActiveOrder = false,
+                hasActiveSession = false,
                 endPending = false,
-                orderAcknowledgedOnConnection = false,
+                sessionAcknowledgedOnConnection = false,
             ),
         )
         assertTrue(
-            OrderAudioPolicy.wakeKwsEnabled(
+            SessionAudioPolicy.wakeKwsEnabled(
                 started = true,
                 ready = true,
                 wakeRequested = true,
-                hasActiveOrder = true,
+                hasActiveSession = true,
                 endPending = false,
-                orderAcknowledgedOnConnection = true,
+                sessionAcknowledgedOnConnection = true,
             ),
         )
         assertFalse(
-            OrderAudioPolicy.wakeKwsEnabled(
+            SessionAudioPolicy.wakeKwsEnabled(
                 started = true,
                 ready = true,
                 wakeRequested = false,
-                hasActiveOrder = true,
+                hasActiveSession = true,
                 endPending = false,
-                orderAcknowledgedOnConnection = true,
+                sessionAcknowledgedOnConnection = true,
             ),
         )
     }

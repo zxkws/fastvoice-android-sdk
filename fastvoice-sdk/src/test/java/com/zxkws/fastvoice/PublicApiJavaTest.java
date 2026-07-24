@@ -1,8 +1,8 @@
 package com.zxkws.fastvoice;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 
 import java.util.Arrays;
 import java.util.Collections;
@@ -10,7 +10,7 @@ import org.junit.Test;
 
 public class PublicApiJavaTest {
     @Test
-    public void typedOrderAndSingleListenerAreUsableFromJava() throws Exception {
+    public void typedSessionContentAndSingleListenerAreUsableFromJava() throws Exception {
         DeviceCredentials credentials = new DeviceCredentials("rover-1", "secret-1");
         FastVoiceConfig config = FastVoiceConfig.builder("ws://127.0.0.1:8100/ws")
             .device(credentials)
@@ -19,52 +19,49 @@ public class PublicApiJavaTest {
             .preferredWakeWords(Arrays.asList("布丁", "你好布丁"))
             .build();
         FastVoiceListener listener = event -> assertNotNull(event);
-        OrderSnapshot snapshot = OrderSnapshot.builder("o1", 1L)
-            .put("park_id", "p1")
+        SessionSnapshot snapshot = SessionSnapshot.builder("s1", 1L)
+            .putAttribute("locale", "zh-CN")
+            .build();
+        SessionRef reference = SessionRef.of("s1", 1L);
+        SessionSnapshot emptySnapshot = new SessionSnapshot("s2", 1L);
+        ContentRequest unboundContent = new ContentRequest("c2", "idle_message");
+        ContentRequest content = ContentRequest.builder("c1", "welcome")
+            .session(reference)
+            .putAttribute("variant", "short")
             .build();
 
         assertEquals("rover-1", config.getDeviceId());
-        assertEquals("o1", snapshot.getId());
-        assertEquals(
-            boolean.class,
-            FastVoiceClient.class.getMethod("startOrder", OrderSnapshot.class).getReturnType()
-        );
-        assertEquals(
-            boolean.class,
-            FastVoiceClient.class.getMethod("updateOrder", OrderSnapshot.class).getReturnType()
-        );
+        assertEquals("s1", snapshot.getId());
         assertEquals(
             boolean.class,
             FastVoiceClient.class.getMethod(
-                "endOrder", String.class, long.class, String.class
+                "startSession", SessionSnapshot.class
             ).getReturnType()
         );
         assertEquals(
             boolean.class,
             FastVoiceClient.class.getMethod(
-                "playArrival",
-                String.class,
-                String.class,
-                long.class,
-                String.class,
-                String.class
+                "updateSession", SessionSnapshot.class
             ).getReturnType()
         );
         assertEquals(
             boolean.class,
             FastVoiceClient.class.getMethod(
-                "playCruise", String.class, String.class
+                "endSession", String.class, long.class, String.class
             ).getReturnType()
         );
-        assertFalse(
-            Arrays.stream(FastVoiceClient.class.getMethods())
-                .anyMatch(method ->
-                    method.getName().equals("sendTrustedMessage") ||
-                    method.getName().equals("playTour")
-                )
+        assertEquals(
+            boolean.class,
+            FastVoiceClient.class.getMethod(
+                "playContent", ContentRequest.class
+            ).getReturnType()
         );
         listener.onEvent(new FastVoiceEvent.StateChanged(FastVoiceState.LISTENING));
-        listener.onEvent(new FastVoiceEvent.TourAck("tour-1"));
-        assertEquals(Collections.singletonMap("park_id", "p1"), snapshot.getContext());
+        listener.onEvent(new FastVoiceEvent.ContentAck("c1"));
+        assertEquals(Collections.singletonMap("locale", "zh-CN"), snapshot.getAttributes());
+        assertEquals(Collections.singletonMap("variant", "short"), content.getAttributes());
+        assertEquals(reference, content.getSession());
+        assertEquals(Collections.emptyMap(), emptySnapshot.getAttributes());
+        assertNull(unboundContent.getSession());
     }
 }
