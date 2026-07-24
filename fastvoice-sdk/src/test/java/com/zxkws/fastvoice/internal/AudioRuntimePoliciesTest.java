@@ -124,13 +124,13 @@ public class AudioRuntimePoliciesTest {
     public void keywordRegistryPreservesEveryPronunciationInFileOrder() throws Exception {
         KeywordLineRegistry registry = new KeywordLineRegistry();
         registry.load(new BufferedReader(new StringReader(
-                "h uàn y ī g è @换一个\n"
-                        + "h uàn y í g è @换一个\n"
+                "h uàn y ī g è :2.0 #0.18 @换一个\n"
+                        + "h uàn y í g è :2.0 #0.18 @换一个\n"
                         + "x ià y ī g è @下一个\n"
                         + "b ù d īng @布丁\n")));
         assertEquals(
-                "h uàn y ī g è @换一个\n"
-                        + "h uàn y í g è @换一个\n"
+                "h uàn y ī g è :2.0 #0.18 @换一个\n"
+                        + "h uàn y í g è :2.0 #0.18 @换一个\n"
                         + "x ià y ī g è @下一个\n",
                 registry.render(Arrays.asList("换一个", "下一个")));
     }

@@ -8,8 +8,8 @@ h uàn g è @换个
 x ià y ī g è @下一个
 x ià y í g è @下一个
 t íng zh ǐ @停止
-t íng y ī x ià @停一下
-t íng y í x ià @停一下
+t íng y ī x ià :2.0 #0.18 @停一下
+t íng y í x ià :2.0 #0.18 @停一下
 b ié sh uō @别说
 b ì z uǐ @闭嘴
 d ěng d ěng @等等
