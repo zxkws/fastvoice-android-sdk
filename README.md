@@ -42,7 +42,7 @@ GitHub Release AAR 不携带 Maven metadata，因此应用模块需要显式声�
 
 ```kotlin
 dependencies {
-    implementation("com.github.zxkws:fastvoice-android-sdk:0.8.0@aar")
+    implementation("com.github.zxkws:fastvoice-android-sdk:0.8.1@aar")
     implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.25")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("io.github.jaredmdobson:concentus:1.0.2")

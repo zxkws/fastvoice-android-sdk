@@ -717,7 +717,7 @@ internal class AudioEngine(
                         playbackActive.get()
                     ) {
                         val kwsFrame = if (hasRecentRender) {
-                            boostPcm16(speechFrame, PLAYBACK_KWS_GAIN)
+                            boostPcm16(captured, PLAYBACK_KWS_GAIN)
                         } else {
                             speechFrame
                         }
@@ -1333,9 +1333,9 @@ internal class AudioEngine(
 /**
  * Boosts little-endian signed 16-bit PCM with saturation.
  *
- * AEC3 correctly removes the far-end signal but leaves near-end short commands quiet on
- * low-grade tablet microphones. AudioEngine applies this only to the KWS copy; ASR uplink and
- * pre-roll retain the unmodified AEC output so residual echo is never re-amplified server-side.
+ * Playback KWS uses a boosted raw-MIC copy to maximize short-command recall. ASR uplink and
+ * pre-roll retain the unmodified AEC output, and a KWS hit remains only a server-confirmed
+ * candidate.
  */
 internal fun boostPcm16(pcm: ByteArray, gain: Int): ByteArray {
     require(gain > 0) { "gain must be positive" }
