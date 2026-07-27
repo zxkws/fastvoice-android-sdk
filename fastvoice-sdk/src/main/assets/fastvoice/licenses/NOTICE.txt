@@ -11,6 +11,10 @@ project, licensed under the MIT License.
 This distribution includes ONNX Runtime native binaries from Microsoft,
 licensed under the MIT License.
 
+This distribution includes Google's WebRTC audio-processing code through
+the Freedesktop webrtc-audio-processing 2.1 package, licensed under the
+BSD 3-Clause License with an additional patent grant.
+
 Runtime dependencies downloaded by Gradle include OkHttp (Apache License
 2.0) and Concentus (BSD 3-Clause License). Their source code is not bundled
 in this repository's SDK AAR.

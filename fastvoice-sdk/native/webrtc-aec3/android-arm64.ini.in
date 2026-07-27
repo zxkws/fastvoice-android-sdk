@@ -1,0 +1,17 @@
+[binaries]
+c = '@TOOLCHAIN_DIR@/bin/aarch64-linux-android26-clang'
+cpp = '@TOOLCHAIN_DIR@/bin/aarch64-linux-android26-clang++'
+ar = '@TOOLCHAIN_DIR@/bin/llvm-ar'
+strip = '@TOOLCHAIN_DIR@/bin/llvm-strip'
+
+[host_machine]
+system = 'android'
+cpu_family = 'aarch64'
+cpu = 'armv8-a'
+endian = 'little'
+
+[built-in options]
+buildtype = 'release'
+default_library = 'shared'
+c_args = ['-fPIC']
+cpp_args = ['-fPIC']

@@ -36,6 +36,7 @@ final class LocalCommandSpotter {
     private static final Set<String> CONTROL_WORDS = new LinkedHashSet<>(Arrays.asList(
             "换一个", "换个", "下一个", "停止", "停一下", "别说", "闭嘴", "等等", "打住", "重来",
             "退下", "退下吧", "继续"));
+
     private KeywordSpotter spotter;
     private final ReplaceOnSuccess<OnlineStream> stream = new ReplaceOnSuccess<>();
     private final KeywordLineRegistry keywordLines = new KeywordLineRegistry();

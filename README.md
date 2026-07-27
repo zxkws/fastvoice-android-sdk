@@ -42,7 +42,7 @@ GitHub Release AAR 不携带 Maven metadata，因此应用模块需要显式声�
 
 ```kotlin
 dependencies {
-    implementation("com.github.zxkws:fastvoice-android-sdk:0.7.0@aar")
+    implementation("com.github.zxkws:fastvoice-android-sdk:0.8.0@aar")
     implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.25")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("io.github.jaredmdobson:concentus:1.0.2")
@@ -201,8 +201,15 @@ SDK 不根据 `key` 或 `attributes` 推断规则。绑定请求必须引用当�
 
 ## 固定音频协议
 
-- 麦克风上行：16 kHz、单声道、20 ms Opus。
+- SDK 始终使用 `AUDIO_SOURCE_MIC`；不依赖设备的
+  `VOICE_COMMUNICATION` 或平台 `AcousticEchoCanceler`。
+- 麦克风上行：16 kHz、单声道、20 ms Opus。播放期间使用 C++ WebRTC M131
+  AEC3 处理后的 MIC，其他时间使用原始 MIC。
 - 服务端下行：48 kHz、单声道、20 ms Opus。
+- AudioTrack 实际接受的 48 kHz PCM 同步作为 AEC3 回声参考；处理核心固定按
+  WebRTC 原生 10 ms 子帧运行。
+- 播放期间只放大端侧 KWS 使用的 AEC 音频副本；上行 ASR 音频不附加该增益，
+  控制词仍由服务端 ASR 复核后执行。
 - `playback.end` 只表示服务端不再发送帧；只有物理写入成功才会上报
   `playback.finished`。
 - 解码、帧长或 AudioTrack 写入异常会上报 `playback.failed`，不会误报成功。
@@ -210,6 +217,8 @@ SDK 不根据 `key` 或 `attributes` 推断规则。绑定请求必须引用当�
 ## 开发验证
 
 ```bash
+./fastvoice-sdk/build-webrtc-native.sh
+
 ./gradlew \
   :fastvoice-sdk:testDebugUnitTest \
   :fastvoice-sdk:lintDebug \

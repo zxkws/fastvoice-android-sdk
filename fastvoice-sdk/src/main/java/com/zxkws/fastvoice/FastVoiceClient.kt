@@ -139,6 +139,10 @@ class FastVoiceClient @JvmOverloads constructor(
                 handlePlaybackFailed(generation, reason)
             }
 
+            override fun onTrace(message: String) {
+                log(FastVoiceLogLevel.DEBUG, message, null)
+            }
+
             override fun onDiagnostic(code: String, message: String, error: Throwable?) {
                 log(
                     if (error == null) FastVoiceLogLevel.WARN else FastVoiceLogLevel.ERROR,
@@ -471,7 +475,7 @@ class FastVoiceClient @JvmOverloads constructor(
     }
 
     private fun handleReady(message: JSONObject) {
-        if (message.keys().asSequence().toSet() != CurrentProtocol.READY_FIELDS) {
+        if (!message.hasExactFields(CurrentProtocol.READY_FIELDS)) {
             terminateProtocol("invalid_ready")
             return
         }
@@ -505,6 +509,10 @@ class FastVoiceClient @JvmOverloads constructor(
     }
 
     private fun handleState(message: JSONObject) {
+        if (!message.hasExactFields(setOf("type", "value"))) {
+            terminateProtocol("invalid_state")
+            return
+        }
         val value = message.strictString("value")
         if (value == null || value !in CurrentProtocol.STATE_VALUES) {
             terminateProtocol("invalid_state")
@@ -514,6 +522,10 @@ class FastVoiceClient @JvmOverloads constructor(
     }
 
     private fun handleTranscript(message: JSONObject) {
+        if (!message.hasExactFields(setOf("type", "role", "text", "final"))) {
+            terminateProtocol("invalid_transcript")
+            return
+        }
         val role = message.strictString("role")
         val text = message.strictString("text")
         val final = message.strictBoolean("final")
@@ -526,6 +538,10 @@ class FastVoiceClient @JvmOverloads constructor(
     }
 
     private fun handleSessionAck(message: JSONObject) {
+        if (!message.hasExactFields(setOf("type", "action", "id", "rev"))) {
+            terminateProtocol("invalid_session_ack")
+            return
+        }
         val action = message.strictString("action")
         val id = message.strictString("id")
         val rev = message.strictLong("rev")
@@ -558,6 +574,10 @@ class FastVoiceClient @JvmOverloads constructor(
     }
 
     private fun handleContentAck(message: JSONObject) {
+        if (!message.hasExactFields(setOf("type", "id"))) {
+            terminateProtocol("invalid_content_ack")
+            return
+        }
         val id = message.strictString("id")
         if (id.isNullOrBlank()) {
             terminateProtocol("invalid_content_ack")
@@ -574,6 +594,10 @@ class FastVoiceClient @JvmOverloads constructor(
     }
 
     private fun handlePlaybackStart(message: JSONObject) {
+        if (!message.hasExactFields(setOf("type", "id", "kind", "content_id"))) {
+            terminateProtocol("invalid_playback_start")
+            return
+        }
         val id = message.strictInt("id")
         val kind = message.strictString("kind")
         val contentId = when {
@@ -600,6 +624,10 @@ class FastVoiceClient @JvmOverloads constructor(
     }
 
     private fun handlePlaybackEnd(message: JSONObject) {
+        if (!message.hasExactFields(setOf("type", "id"))) {
+            terminateProtocol("invalid_playback_end")
+            return
+        }
         val id = message.strictInt("id")
         if (id == null || id != playbackId.get()) return
         val epoch = playbackEpoch.get()
@@ -610,6 +638,16 @@ class FastVoiceClient @JvmOverloads constructor(
         val commandId = message.strictString("id")
         val action = message.strictString("action")
         if (commandId.isNullOrBlank() || action.isNullOrBlank()) {
+            terminateProtocol("invalid_control")
+            return
+        }
+        val expectedFields = when (action) {
+            "capture.start" -> setOf("type", "id", "action", "pre_roll_ms")
+            "playback.stop", "playback.pause", "playback.resume" ->
+                setOf("type", "id", "action", "playback_id")
+            else -> setOf("type", "id", "action")
+        }
+        if (!message.hasExactFields(expectedFields)) {
             terminateProtocol("invalid_control")
             return
         }
@@ -707,6 +745,10 @@ class FastVoiceClient @JvmOverloads constructor(
     }
 
     private fun handleControlDecision(message: JSONObject) {
+        if (!message.hasExactFields(setOf("type", "id", "accepted"))) {
+            terminateProtocol("invalid_control_decision")
+            return
+        }
         val id = message.strictString("id")
         val accepted = message.strictBoolean("accepted")
         if (id.isNullOrBlank() || accepted == null) {
@@ -718,10 +760,24 @@ class FastVoiceClient @JvmOverloads constructor(
 
     private fun handleError(message: JSONObject) {
         val scope = message.strictString("scope")
+        val requiredFields = mutableSetOf("type", "scope", "ref", "code", "recoverable")
+        if (scope == "session") requiredFields += "rev"
+        if (!message.hasExactFields(
+                requiredFields,
+                optional = setOf("message", "fallback_text"),
+            )
+        ) {
+            terminateProtocol("invalid_error")
+            return
+        }
+        val ref = message.strictString("ref")
         val code = message.strictString("code")
         val recoverable = message.strictBoolean("recoverable")
         val rev = message.strictLong("rev")
-        if (scope.isNullOrBlank() || code.isNullOrBlank() || recoverable == null ||
+        val detail = message.optionalStrictString("message")
+        val fallbackText = message.optionalStrictString("fallback_text")
+        if (scope.isNullOrBlank() || ref == null || code.isNullOrBlank() || recoverable == null ||
+            detail.invalid || fallbackText.invalid ||
             (scope == "session" && (rev == null || rev < 1L))
         ) {
             terminateProtocol("invalid_error")
@@ -729,7 +785,7 @@ class FastVoiceClient @JvmOverloads constructor(
         }
         if (scope == "session") {
             val effect = synchronized(sessionSendLock) {
-                sessionState.fail(message.nullableString("ref"), requireNotNull(rev))
+                sessionState.fail(ref, requireNotNull(rev))
             }
             if (effect.matchedCurrent) {
                 syncKwsSession()
@@ -742,17 +798,17 @@ class FastVoiceClient @JvmOverloads constructor(
             }
         } else if (scope == "content") {
             synchronized(sessionSendLock) {
-                message.nullableString("ref")?.let(contentRequestState::complete)
+                contentRequestState.complete(ref)
             }
         }
         val error = FastVoiceError(
             scope = scope,
-            ref = message.nullableString("ref"),
+            ref = ref,
             rev = rev,
             code = code,
-            message = message.nullableString("message"),
+            message = detail.value,
             recoverable = recoverable,
-            fallbackText = message.nullableString("fallback_text"),
+            fallbackText = fallbackText.value,
         )
         emit(FastVoiceEvent.Error(error))
         error.fallbackText?.let(::startLocalFallback)
@@ -1089,12 +1145,26 @@ class FastVoiceClient @JvmOverloads constructor(
     }
 }
 
-private fun JSONObject.nullableString(name: String): String? =
-    takeIf { has(name) && !isNull(name) }?.optString(name)
-
 private fun JSONObject.strictString(name: String): String? = opt(name) as? String
 
 private fun JSONObject.strictBoolean(name: String): Boolean? = opt(name) as? Boolean
+
+private fun JSONObject.hasExactFields(
+    required: Set<String>,
+    optional: Set<String> = emptySet(),
+): Boolean {
+    val actual = keys().asSequence().toSet()
+    return actual.containsAll(required) && actual.all { it in required || it in optional }
+}
+
+private data class OptionalString(val value: String?, val invalid: Boolean)
+
+private fun JSONObject.optionalStrictString(name: String): OptionalString {
+    if (!has(name)) return OptionalString(null, false)
+    return (opt(name) as? String)
+        ?.let { OptionalString(it, false) }
+        ?: OptionalString(null, true)
+}
 
 private fun JSONObject.strictLong(name: String): Long? {
     val value = opt(name) as? Number ?: return null

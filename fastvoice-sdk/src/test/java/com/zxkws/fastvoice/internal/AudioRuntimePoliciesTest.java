@@ -1,65 +1,18 @@
 package com.zxkws.fastvoice.internal;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.fail;
 
 import java.io.BufferedReader;
 import java.io.StringReader;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.List;
 
 import org.junit.Test;
 
 public class AudioRuntimePoliciesTest {
-    private static final class FakeRecord { boolean recording; }
-    private static final class FakeEffect {}
-
-    @Test
-    public void aecIsPreparedBeforeCaptureStarts() {
-        List<String> events = new ArrayList<>();
-        FakeRecord record = new FakeRecord();
-        FakeEffect effect = new FakeEffect();
-
-        AudioCaptureStartup.Started<FakeRecord, FakeEffect> started =
-                AudioCaptureStartup.start(
-                        record,
-                        ignored -> { events.add("prepare"); return effect; },
-                        current -> { events.add("start"); current.recording = true; },
-                        current -> current.recording,
-                        ignored -> events.add("release-effect"),
-                        ignored -> events.add("stop"),
-                        ignored -> events.add("release-record"));
-
-        assertNotNull(started);
-        assertSame(record, started.record());
-        assertSame(effect, started.effect());
-        assertEquals(Arrays.asList("prepare", "start"), events);
-    }
-
-    @Test
-    public void captureStartFailureReleasesEveryPreparedResource() {
-        List<String> events = new ArrayList<>();
-        AudioCaptureStartup.Started<FakeRecord, FakeEffect> started =
-                AudioCaptureStartup.start(
-                        new FakeRecord(),
-                        ignored -> { events.add("prepare"); return new FakeEffect(); },
-                        ignored -> { events.add("start"); throw new IllegalStateException("HAL"); },
-                        ignored -> true,
-                        ignored -> events.add("release-effect"),
-                        ignored -> events.add("stop"),
-                        ignored -> events.add("release-record"));
-
-        assertNull(started);
-        assertEquals(
-                Arrays.asList("prepare", "start", "release-effect", "stop", "release-record"),
-                events);
-    }
-
     @Test
     public void persistentReadFailuresHaveAFiniteRecoveryBudget() {
         AudioReadRecoveryPolicy policy = new AudioReadRecoveryPolicy(3, 5);

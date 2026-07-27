@@ -5,6 +5,7 @@ import android.app.Activity
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.text.InputType
+import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
@@ -18,6 +19,7 @@ import com.zxkws.fastvoice.FastVoiceClient
 import com.zxkws.fastvoice.FastVoiceConfig
 import com.zxkws.fastvoice.FastVoiceEvent
 import com.zxkws.fastvoice.FastVoiceListener
+import com.zxkws.fastvoice.FastVoiceLogger
 import com.zxkws.fastvoice.SessionRef
 import com.zxkws.fastvoice.SessionSnapshot
 
@@ -116,6 +118,9 @@ class MainActivity : Activity() {
                 tokenProvider = DeviceTokenProvider.fixed(token),
                 allowInsecureConnection = endpoint.startsWith("ws://", ignoreCase = true),
                 bypassSystemProxy = endpoint.startsWith("ws://127.0.0.1", ignoreCase = true),
+                logger = FastVoiceLogger { level, message, error ->
+                    Log.d("FastVoiceSample", "$level $message", error)
+                },
             )
             voiceClient?.close()
             voiceClient = FastVoiceClient(applicationContext, config, voiceListener)

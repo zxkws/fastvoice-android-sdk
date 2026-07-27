@@ -11,8 +11,6 @@ import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
-import android.media.audiofx.AcousticEchoCanceler
-import android.media.audiofx.AudioEffect
 import android.os.Build
 import android.os.SystemClock
 import io.github.jaredmdobson.concentus.OpusApplication
@@ -20,6 +18,7 @@ import io.github.jaredmdobson.concentus.OpusDecoder
 import io.github.jaredmdobson.concentus.OpusEncoder
 import io.github.jaredmdobson.concentus.OpusSignal
 import java.util.ArrayDeque
+import java.util.Locale
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -48,6 +47,7 @@ internal class AudioEngine(
         fun onPlaybackProgress(generation: Int, playedMs: Long)
         fun onPlaybackFinished(generation: Int)
         fun onPlaybackFailed(generation: Int, reason: String)
+        fun onTrace(message: String)
         fun onDiagnostic(code: String, message: String, error: Throwable? = null)
     }
 
@@ -58,6 +58,8 @@ internal class AudioEngine(
         const val FRAME_SAMPLES = INPUT_RATE / 1_000 * FRAME_MS
         const val FRAME_BYTES = FRAME_SAMPLES * 2
         private const val OUTPUT_FRAME_SAMPLES = OUTPUT_RATE / 1_000 * FRAME_MS
+        private const val AEC_RENDER_FRAME_BYTES = OUTPUT_RATE / 100 * 2
+        private const val PLAYBACK_KWS_GAIN = 4
         private const val MAX_PRE_ROLL_FRAMES =
             CurrentProtocol.MAX_CAPTURE_PRE_ROLL_MS / FRAME_MS
         private const val PLAYBACK_PREBUFFER_BYTES = OUTPUT_RATE / 10 * 2 // 100 ms
@@ -137,7 +139,7 @@ internal class AudioEngine(
     private var keywordSpotter: LocalCommandSpotter? = null
 
     @Volatile
-    private var echoCanceler: AcousticEchoCanceler? = null
+    private var softwareEchoCanceller: WebRtcEchoCanceller? = null
 
     private var recorderThread: Thread? = null
     private var playerThread: Thread? = null
@@ -180,11 +182,13 @@ internal class AudioEngine(
                 signalType = OpusSignal.OPUS_SIGNAL_VOICE
             }
             decoder = OpusDecoder(OUTPUT_RATE, 1)
+            val echoCanceller = WebRtcEchoCanceller(INPUT_RATE, OUTPUT_RATE)
+            softwareEchoCanceller = echoCanceller
             configureAudioRoute()
             active.set(true)
-            startPlayer(runGeneration)
+            startPlayer(runGeneration, echoCanceller)
             startLocalKws(runGeneration)
-            if (!startRecorder(runGeneration)) {
+            if (!startRecorder(runGeneration, echoCanceller)) {
                 stop()
                 return false
             }
@@ -218,9 +222,7 @@ internal class AudioEngine(
         playbackQueue.clear()
         kwsQueue.clear()
 
-        // The recorder thread owns release(). stop() only unblocks a pending read; otherwise the
-        // thread-local AEC/AudioRecord references would be released twice during its finally block.
-        echoCanceler = null
+        // The recorder thread owns release(). stop() only unblocks a pending read.
         recorder?.let { current ->
             runCatching { current.stop() }
         }
@@ -237,6 +239,8 @@ internal class AudioEngine(
         recorderThread = null
         playerThread = null
         kwsThread = null
+        softwareEchoCanceller?.let { echo -> runCatching { echo.close() } }
+        softwareEchoCanceller = null
 
         // The KWS/player threads likewise release their native owners in finally.
         keywordSpotter = null
@@ -421,6 +425,10 @@ internal class AudioEngine(
             runCatching { current.pause() }
             runCatching { current.flush() }
         }
+        runCatching { softwareEchoCanceller?.reset() }
+            .onFailure {
+                callback.onDiagnostic("software_aec_reset_failed", it.message.orEmpty(), it)
+            }
     }
 
     /** Pauses the current AudioTrack without discarding decoded or queued audio. */
@@ -519,7 +527,10 @@ internal class AudioEngine(
     private fun isActive(runGeneration: Long): Boolean =
         active.get() && generation.get() == runGeneration
 
-    private fun startRecorder(runGeneration: Long): Boolean {
+    private fun startRecorder(
+        runGeneration: Long,
+        echoCanceller: WebRtcEchoCanceller,
+    ): Boolean {
         if (appContext.checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
             PackageManager.PERMISSION_GRANTED
         ) {
@@ -553,17 +564,16 @@ internal class AudioEngine(
             return candidate
         }
 
-        fun openStarted(): AudioCaptureStartup.Started<AudioRecord, AcousticEchoCanceler?>? {
+        fun openStarted(): AudioRecord? {
             val candidate = open(MediaRecorder.AudioSource.MIC) ?: return null
-            return AudioCaptureStartup.start(
-                candidate,
-                { record -> createEchoCanceler(record) },
-                { record -> record.startRecording() },
-                { record -> record.recordingState == AudioRecord.RECORDSTATE_RECORDING },
-                { effect -> effect?.release() },
-                { record -> record.stop() },
-                { record -> record.release() },
-            )
+            val started = runCatching {
+                candidate.startRecording()
+                candidate.recordingState == AudioRecord.RECORDSTATE_RECORDING
+            }.getOrDefault(false)
+            if (started) return candidate
+            runCatching { candidate.stop() }
+            runCatching { candidate.release() }
+            return null
         }
 
         // Production capture is deliberately MIC-only. VOICE_COMMUNICATION returns permanent
@@ -572,26 +582,26 @@ internal class AudioEngine(
             callback.onDiagnostic("microphone_initialization_failed", "AudioRecord")
             return false
         }
-        val firstRecorder = initialCapture.record()
+        val firstRecorder = initialCapture
         recorder = firstRecorder
-        echoCanceler = initialCapture.effect()
 
         recorderThread = Thread({
             val frame = ByteArray(FRAME_BYTES)
             val preRoll = ArrayDeque<ByteArray>(MAX_PRE_ROLL_FRAMES)
             var currentRecorder = firstRecorder
-            var currentEchoCanceler = initialCapture.effect()
+            var aecFailureReported = false
+            var aecMetricFrames = 0
+            var rawEnergy = 0.0
+            var processedEnergy = 0.0
             val readRecovery = AudioReadRecoveryPolicy(
                 RECORDER_REOPEN_ATTEMPTS,
                 RECORDER_STABLE_FRAMES_TO_RESET,
             )
 
-            fun sendUplink(raw: ByteArray) {
+            fun sendUplink(pcm: ByteArray) {
                 val encoded = ByteArray(1_275)
                 val size = runCatching {
-                    // Raw MIC PCM is authoritative. Client-side VAD/gating must not rewrite the
-                    // capture stream behind the server's VAD and echo assumptions.
-                    encoder?.encode(raw, 0, FRAME_SAMPLES, encoded, 0, encoded.size) ?: 0
+                    encoder?.encode(pcm, 0, FRAME_SAMPLES, encoded, 0, encoded.size) ?: 0
                 }.getOrElse {
                     callback.onDiagnostic("opus_encode_failed", it.message.orEmpty(), it)
                     0
@@ -600,9 +610,6 @@ internal class AudioEngine(
             }
 
             fun releaseCurrentCapture() {
-                if (echoCanceler === currentEchoCanceler) echoCanceler = null
-                currentEchoCanceler?.let { effect -> runCatching { effect.release() } }
-                currentEchoCanceler = null
                 if (recorder === currentRecorder) recorder = null
                 runCatching { currentRecorder.stop() }
                 runCatching { currentRecorder.release() }
@@ -613,15 +620,12 @@ internal class AudioEngine(
                 if (!isActive(runGeneration)) return false
                 val replacementCapture = openStarted() ?: return false
                 if (!isActive(runGeneration)) {
-                    replacementCapture.effect()?.let { effect -> runCatching { effect.release() } }
-                    runCatching { replacementCapture.record().stop() }
-                    runCatching { replacementCapture.record().release() }
+                    runCatching { replacementCapture.stop() }
+                    runCatching { replacementCapture.release() }
                     return false
                 }
-                currentRecorder = replacementCapture.record()
-                currentEchoCanceler = replacementCapture.effect()
+                currentRecorder = replacementCapture
                 recorder = currentRecorder
-                echoCanceler = currentEchoCanceler
                 return true
             }
 
@@ -672,15 +676,57 @@ internal class AudioEngine(
                     readRecovery.onFrameRead()
 
                     val captured = frame.copyOf()
+                    val processed = runCatching {
+                        echoCanceller.processCapture(captured)
+                    }.onSuccess {
+                        aecFailureReported = false
+                    }.getOrElse { error ->
+                        if (!aecFailureReported) {
+                            aecFailureReported = true
+                            callback.onDiagnostic(
+                                "software_aec_capture_failed",
+                                error.message.orEmpty(),
+                                error,
+                            )
+                        }
+                        captured
+                    }
+                    val hasRecentRender = echoCanceller.hasRecentRender()
+                    val speechFrame = if (hasRecentRender) processed else captured
+                    if (hasRecentRender) {
+                        rawEnergy += pcmEnergy(captured)
+                        processedEnergy += pcmEnergy(processed)
+                        aecMetricFrames += 1
+                        if (aecMetricFrames >= 100) {
+                            val attenuationDb = if (rawEnergy > 0.0 && processedEnergy > 0.0) {
+                                10.0 * kotlin.math.log10(rawEnergy / processedEnergy)
+                            } else {
+                                0.0
+                            }
+                            callback.onTrace(
+                                "software_aec delay_ms=${echoCanceller.delayEstimateMs()} " +
+                                    "attenuation_db=" +
+                                    String.format(Locale.US, "%.2f", attenuationDb),
+                            )
+                            aecMetricFrames = 0
+                            rawEnergy = 0.0
+                            processedEnergy = 0.0
+                        }
+                    }
                     if (kwsSessionEnabled.get() || playbackOrPromptExpected.get() ||
                         playbackActive.get()
                     ) {
-                        if (!kwsQueue.offer(captured)) {
+                        val kwsFrame = if (hasRecentRender) {
+                            boostPcm16(speechFrame, PLAYBACK_KWS_GAIN)
+                        } else {
+                            speechFrame
+                        }
+                        if (!kwsQueue.offer(kwsFrame)) {
                             kwsQueue.poll()
-                            kwsQueue.offer(captured)
+                            kwsQueue.offer(kwsFrame)
                         }
                     }
-                    preRoll.addLast(captured)
+                    preRoll.addLast(speechFrame)
                     while (preRoll.size > MAX_PRE_ROLL_FRAMES) preRoll.removeFirst()
 
                     val detectedWord = pendingWakeWord.getAndSet(null)
@@ -726,7 +772,7 @@ internal class AudioEngine(
                         ) {
                             // This frame was captured after capture.start was queued. Send it once
                             // as live audio when the caller explicitly requested zero pre-roll.
-                            sendUplink(captured)
+                            sendUplink(speechFrame)
                         }
                         preRoll.clear()
                         if (captureRevision.get() != captureStart.revision) {
@@ -740,7 +786,7 @@ internal class AudioEngine(
                         activeCaptureRevision.get() == captureRevision.get()
                     ) {
                         preRoll.clear()
-                        sendUplink(captured)
+                        sendUplink(speechFrame)
                     }
                 }
             } finally {
@@ -753,30 +799,6 @@ internal class AudioEngine(
         return true
     }
 
-    private fun createEchoCanceler(record: AudioRecord): AcousticEchoCanceler? {
-        if (!AcousticEchoCanceler.isAvailable()) {
-            callback.onDiagnostic("acoustic_echo_canceler_unavailable", "")
-            return null
-        }
-        val created = runCatching {
-            AcousticEchoCanceler.create(record.audioSessionId)
-        }.getOrElse { error ->
-            callback.onDiagnostic("acoustic_echo_canceler_create_failed", error.message.orEmpty(), error)
-            null
-        } ?: return null
-        return runCatching {
-            val status = created.setEnabled(true)
-            check(status == AudioEffect.SUCCESS && created.enabled) {
-                "setEnabled failed: status=$status enabled=${created.enabled}"
-            }
-            created
-        }.getOrElse { error ->
-            runCatching { created.release() }
-            callback.onDiagnostic("acoustic_echo_canceler_enable_failed", error.message.orEmpty(), error)
-            null
-        }
-    }
-
     private fun startLocalKws(runGeneration: Long) {
         kwsThread = Thread({
             val engine = LocalCommandSpotter()
@@ -785,7 +807,10 @@ internal class AudioEngine(
                 engine.init(appContext.assets, enabledWakeWords)
                 while (isActive(runGeneration)) {
                     val frame = kwsQueue.poll(100, TimeUnit.MILLISECONDS) ?: continue
-                    engine.accept(frame)?.let(::handleKeyword)
+                    engine.accept(frame)?.let { keyword ->
+                        callback.onTrace("local_kws_detected name=$keyword")
+                        handleKeyword(keyword)
+                    }
                 }
             } catch (error: InterruptedException) {
                 Thread.currentThread().interrupt()
@@ -852,7 +877,10 @@ internal class AudioEngine(
         }
     }
 
-    private fun startPlayer(runGeneration: Long) {
+    private fun startPlayer(
+        runGeneration: Long,
+        echoCanceller: WebRtcEchoCanceller,
+    ) {
         playerThread = Thread({
             var localEpoch = playbackEpoch.get()
             var localServerGeneration = serverPlaybackGeneration.get()
@@ -911,6 +939,7 @@ internal class AudioEngine(
                 }
                 val recovery = AudioWriteRecoveryPolicy(AUDIO_WRITE_UNHELD_ZERO_RETRIES)
                 var offset = 0
+                var referenceFed = 0
                 while (isActive(runGeneration) && playbackEpoch.get() == localEpoch &&
                     playbackAccepting.get()
                 ) {
@@ -921,9 +950,19 @@ internal class AudioEngine(
                         continue
                     }
                     val remaining = pcm.size - offset
+                    val requested = minOf(remaining, AEC_RENDER_FRAME_BYTES)
+                    val referenceEnd = offset + requested
+                    if (referenceFed < referenceEnd) {
+                        echoCanceller.acceptRender(
+                            pcm,
+                            referenceFed,
+                            referenceEnd - referenceFed,
+                        )
+                        referenceFed = referenceEnd
+                    }
                     var writeError: Throwable? = null
                     val written = runCatching {
-                        current.write(pcm, offset, remaining, AudioTrack.WRITE_BLOCKING)
+                        current.write(pcm, offset, requested, AudioTrack.WRITE_BLOCKING)
                     }.onFailure { writeError = it }.getOrDefault(AudioTrack.ERROR_INVALID_OPERATION)
                     if (!isActive(runGeneration) || playbackEpoch.get() != localEpoch ||
                         !playbackAccepting.get()
@@ -931,22 +970,24 @@ internal class AudioEngine(
 
                     val pauseAffectedWrite = playbackPaused.get() ||
                         playbackWriteHoldRevision.get() != revisionBefore
-                    val decision = recovery.onWriteResult(written, remaining, pauseAffectedWrite)
+                    val decision = recovery.onWriteResult(written, requested, pauseAffectedWrite)
                     if (written > 0) {
-                        val accepted = minOf(written, remaining)
+                        val accepted = minOf(written, requested)
                         offset += accepted
                         bytesWritten += accepted
                         reportProgress()
                     }
                     when (decision) {
-                        AudioWriteRecoveryPolicy.Decision.COMPLETE -> return offset == pcm.size
+                        AudioWriteRecoveryPolicy.Decision.COMPLETE -> {
+                            if (offset == pcm.size) return true
+                        }
                         AudioWriteRecoveryPolicy.Decision.RETRY -> {
                             if (!waitForWriteRetry(localEpoch)) return false
                         }
                         AudioWriteRecoveryPolicy.Decision.FAIL -> {
                             val reason = writeError?.let {
                                 "write threw ${it::class.java.simpleName}: ${it.message.orEmpty()}"
-                            } ?: "write=$written expected=$remaining"
+                            } ?: "write=$written expected=$requested"
                             failPlayback(localEpoch, localServerGeneration, reason)
                             return false
                         }
@@ -1164,6 +1205,10 @@ internal class AudioEngine(
                 runCatching { current.pause() }
                 runCatching { current.flush() }
             }
+            runCatching { softwareEchoCanceller?.reset() }
+                .onFailure {
+                    callback.onDiagnostic("software_aec_reset_failed", it.message.orEmpty(), it)
+                }
             true
         }
         if (failed) callback.onPlaybackFailed(serverGeneration, reason)
@@ -1205,6 +1250,19 @@ internal class AudioEngine(
         callback.onDiagnostic("speaker_initialization_failed", "state=${created.state}")
         runCatching { created.release() }
         return null
+    }
+
+    private fun pcmEnergy(pcm: ByteArray): Double {
+        var energy = 0.0
+        var offset = 0
+        while (offset + 1 < pcm.size) {
+            val low = pcm[offset].toInt() and 0xff
+            val high = pcm[offset + 1].toInt()
+            val sample = (low or (high shl 8)).toShort().toDouble()
+            energy += sample * sample
+            offset += 2
+        }
+        return energy
     }
 
     private fun configureAudioRoute() {
@@ -1270,4 +1328,30 @@ internal class AudioEngine(
         previousSpeakerphone = null
         previousCommunicationDevice = null
     }
+}
+
+/**
+ * Boosts little-endian signed 16-bit PCM with saturation.
+ *
+ * AEC3 correctly removes the far-end signal but leaves near-end short commands quiet on
+ * low-grade tablet microphones. AudioEngine applies this only to the KWS copy; ASR uplink and
+ * pre-roll retain the unmodified AEC output so residual echo is never re-amplified server-side.
+ */
+internal fun boostPcm16(pcm: ByteArray, gain: Int): ByteArray {
+    require(gain > 0) { "gain must be positive" }
+    val boosted = ByteArray(pcm.size)
+    var offset = 0
+    while (offset + 1 < pcm.size) {
+        val low = pcm[offset].toInt() and 0xff
+        val high = pcm[offset + 1].toInt() shl 8
+        val sample = (low or high).toShort().toInt()
+        val scaled = (sample.toLong() * gain).coerceIn(
+            Short.MIN_VALUE.toLong(),
+            Short.MAX_VALUE.toLong(),
+        ).toInt()
+        boosted[offset] = scaled.toByte()
+        boosted[offset + 1] = (scaled shr 8).toByte()
+        offset += 2
+    }
+    return boosted
 }

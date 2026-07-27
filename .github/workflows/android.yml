@@ -60,10 +60,14 @@ jobs:
           unzip -l "$aar" | grep -q "libs/sherpa-onnx-1.13.2-classes.jar"
           unzip -l "$aar" | grep -q "jni/arm64-v8a/libonnxruntime.so"
           unzip -l "$aar" | grep -q "jni/arm64-v8a/libsherpa-onnx-jni.so"
+          unzip -l "$aar" | grep -q "jni/arm64-v8a/libwebrtc-audio-processing-2.so"
+          unzip -l "$aar" | grep -q "jni/arm64-v8a/libfastvoice_webrtc_aec3.so"
+          unzip -l "$aar" | grep -q "jni/arm64-v8a/libc++_shared.so"
           unzip -l "$aar" | grep -q "assets/fastvoice/licenses/Apache-2.0.txt"
           unzip -l "$aar" | grep -q "assets/fastvoice/licenses/NOTICE.txt"
           unzip -l "$aar" | grep -q "assets/fastvoice/licenses/Silero-VAD-MIT.txt"
           unzip -l "$aar" | grep -q "assets/fastvoice/licenses/ONNX-Runtime-MIT.txt"
+          unzip -l "$aar" | grep -q "assets/fastvoice/licenses/WebRTC-BSD-3-Clause.txt"
           if unzip -l "$aar" | grep -q "jni/armeabi-v7a/"; then
             exit 1
           fi
