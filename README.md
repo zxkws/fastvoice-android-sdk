@@ -5,6 +5,7 @@ FastVoice 是一个面向 Android 的通用实时语音 SDK。它负责设备鉴
 
 SDK 只理解通用的会话、内容请求和播放生命周期。应用自己的字段放在
 `attributes` 中，SDK 会验证并原样发送，不解释业务含义。
+SDK 不调用 Android `TextToSpeech`；所有可听语音都来自服务端下发的音频。
 
 ## 环境要求
 
@@ -13,36 +14,20 @@ SDK 只理解通用的会话、内容请求和播放生命周期。应用自己�
 - `android.permission.RECORD_AUDIO`
 - JDK 17（构建 SDK）
 
-## 从 GitHub Release 引入
+## 构建并引入当前 AAR
 
-在 `settings.gradle.kts` 的 `dependencyResolutionManagement.repositories` 中加入：
+先构建当前源码：
 
-```kotlin
-exclusiveContent {
-    forRepository {
-        ivy {
-            name = "FastVoiceGitHubRelease"
-            url = uri(
-                "https://github.com/zxkws/fastvoice-android-sdk/releases/download",
-            )
-            patternLayout {
-                artifact("[revision]/[artifact]-[revision].[ext]")
-            }
-            metadataSources { artifact() }
-        }
-    }
-    filter {
-        includeModule("com.github.zxkws", "fastvoice-android-sdk")
-    }
-}
+```shell
+./gradlew :fastvoice-sdk:check :fastvoice-sdk:assembleRelease
 ```
 
-GitHub Release AAR 不携带 Maven metadata，因此应用模块需要显式声明 SDK 的运行时
-依赖：
+把 `fastvoice-sdk/build/outputs/aar/fastvoice-sdk-release.aar` 复制到应用模块的
+`libs/`。独立 AAR 不携带 Maven metadata，因此应用模块还要显式声明运行时依赖：
 
 ```kotlin
 dependencies {
-    implementation("com.github.zxkws:fastvoice-android-sdk:0.8.1@aar")
+    implementation(files("libs/fastvoice-sdk-release.aar"))
     implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.25")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("io.github.jaredmdobson:concentus:1.0.2")
@@ -208,7 +193,8 @@ SDK 不根据 `key` 或 `attributes` 推断规则。绑定请求必须引用当�
 - 服务端下行：48 kHz、单声道、20 ms Opus。
 - AudioTrack 实际接受的 48 kHz PCM 同步作为 AEC3 回声参考；处理核心固定按
   WebRTC 原生 10 ms 子帧运行。
-- 播放期间只放大端侧 KWS 使用的 AEC 音频副本；上行 ASR 音频不附加该增益，
+- 播放期间端侧 KWS 使用放大后的原始 MIC 副本；上行 ASR 与 pre-roll 使用
+  AEC3 处理后的音频且不附加该增益，
   控制词仍由服务端 ASR 复核后执行。
 - `playback.end` 只表示服务端不再发送帧；只有物理写入成功才会上报
   `playback.finished`。

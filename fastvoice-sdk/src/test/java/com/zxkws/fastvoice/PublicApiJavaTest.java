@@ -14,7 +14,6 @@ public class PublicApiJavaTest {
         FastVoiceConfig config = FastVoiceConfig.builder("ws://127.0.0.1:8100/ws")
             .token("secret-1")
             .allowInsecureConnection(true)
-            .localFallbackPromptEnabled(false)
             .preferredWakeWords(Arrays.asList("布丁", "你好布丁"))
             .build();
         FastVoiceListener listener = event -> assertNotNull(event);

@@ -61,21 +61,8 @@ internal class LocalCommandPrePauseState {
     }
 
     @Synchronized
-    fun blocksPlayback(generation: Int, epoch: Long): Boolean =
-        candidateId != null && this.generation == generation && this.epoch == epoch
-
-    @Synchronized
     fun clear(): Boolean {
         if (candidateId == null) return false
-        clearInternal()
-        return true
-    }
-
-    @Synchronized
-    fun clearIfCurrent(generation: Int, epoch: Long): Boolean {
-        if (candidateId == null || this.generation != generation || this.epoch != epoch) {
-            return false
-        }
         clearInternal()
         return true
     }

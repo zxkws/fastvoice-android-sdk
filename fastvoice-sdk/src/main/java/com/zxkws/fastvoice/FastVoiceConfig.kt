@@ -60,7 +60,6 @@ class FastVoiceConfig @JvmOverloads constructor(
     val allowInsecureConnection: Boolean = false,
     val routeAudioToSpeaker: Boolean = true,
     val logger: FastVoiceLogger? = null,
-    val localFallbackPromptEnabled: Boolean = true,
 ) {
     val preferredWakeWords: List<String> =
         Collections.unmodifiableList(ArrayList(preferredWakeWords))
@@ -99,8 +98,6 @@ class FastVoiceConfig @JvmOverloads constructor(
         append(routeAudioToSpeaker)
         append(", logger=")
         append(if (logger == null) "null" else "[configured]")
-        append(", localFallbackPromptEnabled=")
-        append(localFallbackPromptEnabled)
         append(')')
     }
 
@@ -113,7 +110,6 @@ class FastVoiceConfig @JvmOverloads constructor(
         private var allowInsecureConnection: Boolean = false
         private var routeAudioToSpeaker: Boolean = true
         private var logger: FastVoiceLogger? = null
-        private var localFallbackPromptEnabled: Boolean = true
 
         fun token(token: String) = apply {
             tokenProvider = DeviceTokenProvider.fixed(token)
@@ -141,10 +137,6 @@ class FastVoiceConfig @JvmOverloads constructor(
 
         fun logger(logger: FastVoiceLogger?) = apply { this.logger = logger }
 
-        fun localFallbackPromptEnabled(enabled: Boolean) = apply {
-            localFallbackPromptEnabled = enabled
-        }
-
         fun build(): FastVoiceConfig = FastVoiceConfig(
             endpoint = endpoint,
             tokenProvider = requireNotNull(tokenProvider) { "token is required" },
@@ -155,7 +147,6 @@ class FastVoiceConfig @JvmOverloads constructor(
             allowInsecureConnection = allowInsecureConnection,
             routeAudioToSpeaker = routeAudioToSpeaker,
             logger = logger,
-            localFallbackPromptEnabled = localFallbackPromptEnabled,
         )
     }
 

@@ -5,9 +5,6 @@ This distribution includes sherpa-onnx Java/JNI components and keyword
 spotting model files from the sherpa-onnx project, licensed under the
 Apache License 2.0.
 
-This distribution includes a Silero VAD model from the snakers4/silero-vad
-project, licensed under the MIT License.
-
 This distribution includes ONNX Runtime native binaries from Microsoft,
 licensed under the MIT License.
 

@@ -57,18 +57,19 @@ jobs:
           set -euo pipefail
           aar="fastvoice-sdk/build/outputs/aar/fastvoice-sdk-release.aar"
           test -f "$aar"
-          unzip -l "$aar" | grep -q "libs/sherpa-onnx-1.13.2-classes.jar"
-          unzip -l "$aar" | grep -q "jni/arm64-v8a/libonnxruntime.so"
-          unzip -l "$aar" | grep -q "jni/arm64-v8a/libsherpa-onnx-jni.so"
-          unzip -l "$aar" | grep -q "jni/arm64-v8a/libwebrtc-audio-processing-2.so"
-          unzip -l "$aar" | grep -q "jni/arm64-v8a/libfastvoice_webrtc_aec3.so"
-          unzip -l "$aar" | grep -q "jni/arm64-v8a/libc++_shared.so"
-          unzip -l "$aar" | grep -q "assets/fastvoice/licenses/Apache-2.0.txt"
-          unzip -l "$aar" | grep -q "assets/fastvoice/licenses/NOTICE.txt"
-          unzip -l "$aar" | grep -q "assets/fastvoice/licenses/Silero-VAD-MIT.txt"
-          unzip -l "$aar" | grep -q "assets/fastvoice/licenses/ONNX-Runtime-MIT.txt"
-          unzip -l "$aar" | grep -q "assets/fastvoice/licenses/WebRTC-BSD-3-Clause.txt"
-          if unzip -l "$aar" | grep -q "jni/armeabi-v7a/"; then
+          listing="$RUNNER_TEMP/fastvoice-aar-listing.txt"
+          unzip -Z1 "$aar" > "$listing"
+          grep -Fxq "libs/sherpa-onnx-1.13.2-classes.jar" "$listing"
+          grep -Fxq "jni/arm64-v8a/libonnxruntime.so" "$listing"
+          grep -Fxq "jni/arm64-v8a/libsherpa-onnx-jni.so" "$listing"
+          grep -Fxq "jni/arm64-v8a/libwebrtc-audio-processing-2.so" "$listing"
+          grep -Fxq "jni/arm64-v8a/libfastvoice_webrtc_aec3.so" "$listing"
+          grep -Fxq "jni/arm64-v8a/libc++_shared.so" "$listing"
+          grep -Fxq "assets/fastvoice/licenses/Apache-2.0.txt" "$listing"
+          grep -Fxq "assets/fastvoice/licenses/NOTICE.txt" "$listing"
+          grep -Fxq "assets/fastvoice/licenses/ONNX-Runtime-MIT.txt" "$listing"
+          grep -Fxq "assets/fastvoice/licenses/WebRTC-BSD-3-Clause.txt" "$listing"
+          if grep -Eqi "silero|jni/armeabi-v7a/" "$listing"; then
             exit 1
           fi
           version="$(./gradlew -q :fastvoice-sdk:properties | sed -n 's/^version: //p' | head -n 1)"

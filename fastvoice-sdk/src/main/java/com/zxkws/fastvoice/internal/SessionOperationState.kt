@@ -238,9 +238,6 @@ internal class SessionOperationState {
     fun desired(): SessionSnapshot? = desiredSession
 
     @Synchronized
-    fun hasDesiredSession(): Boolean = desiredSession != null
-
-    @Synchronized
     fun captureAllowed(): Boolean = SessionAudioPolicy.captureAllowed(
         hasActiveSession = desiredSession != null,
         endPending = pendingEnd != null,

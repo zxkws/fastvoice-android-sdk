@@ -51,9 +51,9 @@ class KwsAndCapturePolicyTest {
     }
 
     @Test
-    fun controlDuringClientFallbackTargetsTheLocalPrompt() {
+    fun controlTargetsServerPlaybackOnly() {
         assertEquals(
-            KeywordRoutingPolicy.ControlTarget.LOCAL_PROMPT,
+            KeywordRoutingPolicy.ControlTarget.NONE,
             KeywordRoutingPolicy.controlTarget(
                 serverPlaybackGeneration = -1,
                 playbackOrPromptExpected = true,

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.0 — 2026-07-28
+
+- 删除 Android `TextToSpeech` 本地提示音及 `localFallbackPromptEnabled` API；
+  客户端的所有可听语音只接受服务端下发音频。
+- 删除不再使用的 TTS service manifest query 和本地提示音 KWS 分支。
+- 删除未接入音频链路的旧 MIC VAD 门控及其 Silero 模型，并清理只被测试读取或
+  全仓无引用的内部状态查询。
+
 ## 0.8.1 — 2026-07-27
 
 - 播放期间端侧 KWS 候选支路改用原始 MIC 并保留 12 dB 增益，避免 AEC3

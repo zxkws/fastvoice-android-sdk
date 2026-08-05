@@ -39,9 +39,6 @@ internal class AudioEngine(
         /** A local KWS hit is only a candidate; the server remains the final arbiter. */
         fun onLocalCommandCandidate(generation: Int, text: String)
 
-        /** Stops a client-owned fallback prompt that has no server playback id. */
-        fun onLocalPromptControl(text: String)
-
         fun onUplinkPacket(packet: ByteArray)
         fun onPlaybackStarted()
         fun onPlaybackProgress(generation: Int, playedMs: Long)
@@ -330,8 +327,6 @@ internal class AudioEngine(
     }
 
     fun isUplinkEnabled(): Boolean = uplinkEnabled.get()
-
-    fun isPlaybackActive(): Boolean = playbackActive.get()
 
     fun enqueueOpus(packet: ByteArray) {
         if (!active.get() || !playbackAccepting.get()) return
@@ -858,10 +853,6 @@ internal class AudioEngine(
                 playbackActive = playbackActive.get(),
             )
         ) {
-            KeywordRoutingPolicy.ControlTarget.LOCAL_PROMPT -> {
-                callback.onLocalPromptControl(keyword)
-                return
-            }
             KeywordRoutingPolicy.ControlTarget.NONE -> return
             KeywordRoutingPolicy.ControlTarget.SERVER_PLAYBACK -> Unit
         }

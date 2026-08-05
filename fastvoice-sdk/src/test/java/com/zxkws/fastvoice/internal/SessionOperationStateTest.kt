@@ -62,7 +62,7 @@ class SessionOperationStateTest {
         val failed = state.fail("s1", 1)
 
         assertTrue(failed.matchedCurrent)
-        assertFalse(state.hasDesiredSession())
+        assertNull(state.desired())
         assertFalse(state.acknowledge("start", "s1", 1).matched)
         assertTrue(
             state.start(SessionSnapshot("s2", 1, mapOf("mode" to "s2"))).accepted,
@@ -77,7 +77,7 @@ class SessionOperationStateTest {
 
         assertTrue(state.fail("s1", 1).matchedCurrent)
 
-        assertFalse(state.hasDesiredSession())
+        assertNull(state.desired())
         assertTrue(
             state.start(SessionSnapshot("s2", 1, mapOf("mode" to "s2"))).accepted,
         )

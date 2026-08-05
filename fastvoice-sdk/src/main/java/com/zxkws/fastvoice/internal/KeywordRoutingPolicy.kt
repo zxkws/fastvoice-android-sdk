@@ -8,7 +8,7 @@ package com.zxkws.fastvoice.internal
  */
 internal object KeywordRoutingPolicy {
     enum class Dispatch { WAKE, CONTROL, IGNORE }
-    enum class ControlTarget { SERVER_PLAYBACK, LOCAL_PROMPT, NONE }
+    enum class ControlTarget { SERVER_PLAYBACK, NONE }
 
     fun shouldResetStream(previousEnabled: Boolean, enabled: Boolean): Boolean =
         previousEnabled && !enabled
@@ -26,8 +26,6 @@ internal object KeywordRoutingPolicy {
     ): ControlTarget = when {
         serverPlaybackGeneration >= 0 && (playbackOrPromptExpected || playbackActive) ->
             ControlTarget.SERVER_PLAYBACK
-        serverPlaybackGeneration < 0 && playbackOrPromptExpected ->
-            ControlTarget.LOCAL_PROMPT
         else -> ControlTarget.NONE
     }
 

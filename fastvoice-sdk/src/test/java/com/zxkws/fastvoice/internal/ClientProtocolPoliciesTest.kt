@@ -53,7 +53,6 @@ class ClientProtocolPoliciesTest {
             LocalCommandPrePauseState.Outcome.RESUME,
             state.decide("lc1", 7, "rejected", 7, 20, serverPaused = false),
         )
-        assertFalse(state.blocksPlayback(7, 20))
 
         assertTrue(state.begin("lc2", 7, 20))
         assertEquals(
@@ -70,7 +69,6 @@ class ClientProtocolPoliciesTest {
             LocalCommandPrePauseState.Outcome.ACCEPTED_HOLD,
             state.decide("lc", 8, "accepted", 8, 30, serverPaused = false),
         )
-        assertTrue(state.blocksPlayback(8, 30))
         assertEquals(
             LocalCommandPrePauseState.Outcome.IGNORED,
             state.timeout("lc", 8, 30, 8, 30, serverPaused = false, requireAccepted = false),

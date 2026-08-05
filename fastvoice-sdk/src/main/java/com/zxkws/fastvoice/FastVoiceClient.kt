@@ -7,12 +7,10 @@ import android.media.AudioManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import com.zxkws.fastvoice.internal.AndroidTextToSpeechPromptPlayer
 import com.zxkws.fastvoice.internal.AudioEngine
 import com.zxkws.fastvoice.internal.ClientSessionEpoch
 import com.zxkws.fastvoice.internal.ContentRequestState
 import com.zxkws.fastvoice.internal.CurrentProtocol
-import com.zxkws.fastvoice.internal.FallbackPromptPlayer
 import com.zxkws.fastvoice.internal.LocalCommandPrePauseState
 import com.zxkws.fastvoice.internal.LocalCommandTimeoutPolicy
 import com.zxkws.fastvoice.internal.SessionOperationState
@@ -77,10 +75,6 @@ class FastVoiceClient @JvmOverloads constructor(
     private val contentRequestState = ContentRequestState()
     private var playbackContentId: String? = null
 
-    private val localFallbackActive = AtomicBoolean(false)
-    private val localFallbackGeneration = AtomicLong(0)
-    private var fallbackPromptPlayer: FallbackPromptPlayer? = null
-
     private val scheduler = Executors.newSingleThreadScheduledExecutor { runnable ->
         Thread(runnable, "fastvoice-scheduler").apply { isDaemon = true }
     }
@@ -108,13 +102,6 @@ class FastVoiceClient @JvmOverloads constructor(
 
             override fun onLocalCommandCandidate(generation: Int, text: String) {
                 handleLocalCommandCandidate(generation, text)
-            }
-
-            override fun onLocalPromptControl(text: String) {
-                if (!localFallbackActive.get()) return
-                cancelLocalFallback()
-                audio.setWakeArmed(canArmWake())
-                socket.get()?.takeIf { ready.get() }?.send(ProtocolEncoder.turnCancel())
             }
 
             override fun onUplinkPacket(packet: ByteArray) {
@@ -165,17 +152,6 @@ class FastVoiceClient @JvmOverloads constructor(
         require(unsupportedWakeWords.isEmpty()) {
             "preferredWakeWords unsupported by the local model: $unsupportedWakeWords"
         }
-        if (config.localFallbackPromptEnabled) {
-            fallbackPromptPlayer = AndroidTextToSpeechPromptPlayer(appContext) {
-                    code, message, error ->
-                log(
-                    if (error == null) FastVoiceLogLevel.WARN else FastVoiceLogLevel.ERROR,
-                    "$code: $message",
-                    error,
-                )
-                emitLocalError(code, message.ifEmpty { null }, error)
-            }
-        }
     }
 
     /** Whether this instance currently owns audio resources and reconnect work. */
@@ -222,7 +198,6 @@ class FastVoiceClient @JvmOverloads constructor(
         }
         reconnectFuture?.cancel(false)
         reconnectFuture = null
-        cancelLocalFallback()
         audio.setKwsSessionEnabled(false)
         audio.setWakeArmed(false)
         audio.stopCapture()
@@ -233,7 +208,6 @@ class FastVoiceClient @JvmOverloads constructor(
 
     /** Stops local output immediately and cancels the current server turn. */
     fun interrupt() {
-        cancelLocalFallback()
         invalidatePlayback()
         socket.get()?.takeIf { ready.get() }?.send(ProtocolEncoder.turnCancel())
     }
@@ -360,8 +334,6 @@ class FastVoiceClient @JvmOverloads constructor(
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         stop()
-        fallbackPromptPlayer?.close()
-        fallbackPromptPlayer = null
         scheduler.shutdownNow()
         httpClient.dispatcher.executorService.shutdown()
         httpClient.connectionPool.evictAll()
@@ -533,7 +505,6 @@ class FastVoiceClient @JvmOverloads constructor(
             terminateProtocol("invalid_transcript")
             return
         }
-        if (role == "assistant") cancelLocalFallback()
         emit(FastVoiceEvent.Transcript(requireNotNull(role), text, final))
     }
 
@@ -609,7 +580,6 @@ class FastVoiceClient @JvmOverloads constructor(
             terminateProtocol("invalid_playback_start")
             return
         }
-        cancelLocalFallback()
         synchronized(playbackControlLock) {
             clearLocalCommandPrePauseLocked(resume = false)
             playbackId.set(id)
@@ -705,11 +675,6 @@ class FastVoiceClient @JvmOverloads constructor(
     private fun applyPlaybackStop(message: JSONObject): Boolean {
         val target = message.strictInt("playback_id") ?: return false
         synchronized(playbackControlLock) {
-            if (playbackId.get() < 0 && localFallbackActive.get()) {
-                cancelLocalFallback()
-                audio.setWakeArmed(canArmWake())
-                return true
-            }
             if (target != playbackId.get()) return false
             clearLocalCommandPrePauseLocked(resume = false)
             val epoch = playbackEpoch.incrementAndGet()
@@ -811,7 +776,6 @@ class FastVoiceClient @JvmOverloads constructor(
             fallbackText = fallbackText.value,
         )
         emit(FastVoiceEvent.Error(error))
-        error.fallbackText?.let(::startLocalFallback)
     }
 
     private fun handleLocalCommandCandidate(playback: Int, name: String) {
@@ -992,8 +956,7 @@ class FastVoiceClient @JvmOverloads constructor(
     private fun canArmWake(): Boolean =
         started.get() && ready.get() && config.wakeEnabled &&
             wakeWords.get().isNotEmpty() && playbackId.get() < 0 &&
-            !localFallbackActive.get() && !audio.isUplinkEnabled() &&
-            isSessionCaptureAllowed()
+            !audio.isUplinkEnabled() && isSessionCaptureAllowed()
 
     private fun isSessionCaptureAllowed(): Boolean = sessionState.captureAllowed()
 
@@ -1010,36 +973,6 @@ class FastVoiceClient @JvmOverloads constructor(
     private fun selectedLocalWakeWords(): List<String> =
         if (config.preferredWakeWords.isEmpty()) AudioEngine.SUPPORTED_WAKE_WORDS.toList()
         else config.preferredWakeWords
-
-    private fun startLocalFallback(text: String) {
-        val player = fallbackPromptPlayer ?: return
-        cancelLocalFallback()
-        val generation = localFallbackGeneration.incrementAndGet()
-        localFallbackActive.set(true)
-        audio.stopCapture()
-        audio.setWakeArmed(false)
-        audio.setPromptPlayback(true)
-        if (!player.speak(text) { success ->
-                if (localFallbackGeneration.get() != generation) return@speak
-                localFallbackActive.set(false)
-                audio.setPromptPlayback(playbackId.get() >= 0)
-                audio.setWakeArmed(canArmWake())
-                if (!success) emitLocalError("fallback_tts_unavailable")
-            }
-        ) {
-            localFallbackActive.set(false)
-            audio.setPromptPlayback(playbackId.get() >= 0)
-            audio.setWakeArmed(canArmWake())
-            emitLocalError("fallback_tts_unavailable")
-        }
-    }
-
-    private fun cancelLocalFallback() {
-        localFallbackGeneration.incrementAndGet()
-        localFallbackActive.set(false)
-        fallbackPromptPlayer?.stop()
-        audio.setPromptPlayback(playbackId.get() >= 0)
-    }
 
     private fun handleDisconnected(
         session: Long,
@@ -1060,7 +993,6 @@ class FastVoiceClient @JvmOverloads constructor(
                 audio.setKwsSessionEnabled(false)
                 audio.setWakeArmed(false)
                 audio.stopCapture()
-                cancelLocalFallback()
                 invalidatePlayback()
             }
         }
@@ -1078,7 +1010,6 @@ class FastVoiceClient @JvmOverloads constructor(
         audio.setKwsSessionEnabled(false)
         audio.setWakeArmed(false)
         audio.stopCapture()
-        cancelLocalFallback()
         invalidatePlayback()
         socket.get()?.close(1_002, code)
     }
