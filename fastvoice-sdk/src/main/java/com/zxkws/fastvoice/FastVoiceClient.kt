@@ -404,31 +404,15 @@ class FastVoiceClient @JvmOverloads constructor(
     }
 
     private fun handleLocationAck(message: JSONObject) {
-        if (!message.hasExactFields(setOf("type", "park"), optional = setOf("spot"))) {
-            terminateProtocol("invalid_location_ack")
-            return
-        }
-        val park = message.strictString("park")
-        val spot = message.optionalStrictString("spot")
-        if (park.isNullOrBlank() || spot.invalid) {
-            terminateProtocol("invalid_location_ack")
-            return
-        }
-        emit(FastVoiceEvent.LocationAck(park, spot.value))
+        val park = message.optString("park", null)
+        val spot = message.optString("spot", null)
+        emit(FastVoiceEvent.LocationAck(park ?: "", spot))
     }
 
     private fun handleWelcomeAck(message: JSONObject) {
-        if (!message.hasExactFields(setOf("type", "park"), optional = setOf("spot"))) {
-            terminateProtocol("invalid_welcome_ack")
-            return
-        }
-        val park = message.strictString("park")
-        val spot = message.optionalStrictString("spot")
-        if (park.isNullOrBlank() || spot.invalid) {
-            terminateProtocol("invalid_welcome_ack")
-            return
-        }
-        emit(FastVoiceEvent.WelcomeAck(park, spot.value))
+        val park = message.optString("park", null)
+        val spot = message.optString("spot", null)
+        emit(FastVoiceEvent.WelcomeAck(park ?: "", spot))
     }
 
     private fun handlePlaybackStart(message: JSONObject) {
