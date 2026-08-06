@@ -116,8 +116,6 @@ class MainActivity : Activity() {
             val config = FastVoiceConfig(
                 endpoint = endpoint,
                 tokenProvider = DeviceTokenProvider.fixed(token),
-                allowInsecureConnection = endpoint.startsWith("ws://", ignoreCase = true),
-                bypassSystemProxy = endpoint.startsWith("ws://127.0.0.1", ignoreCase = true),
                 logger = FastVoiceLogger { level, message, error ->
                     Log.d("FastVoiceSample", "$level $message", error)
                 },

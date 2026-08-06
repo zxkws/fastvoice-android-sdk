@@ -18,12 +18,11 @@ class SessionOperationStateTest {
 
         assertTrue(state.start(session).accepted)
         assertFalse(state.captureAllowed())
-        assertFalse(state.wakeKwsEnabled(started = true, ready = true, wakeRequested = true))
+        assertFalse(state.wakeKwsEnabled(started = true, ready = true))
 
         assertTrue(state.acknowledge("start", "s1", 1).startAccepted)
         assertTrue(state.captureAllowed())
-        assertTrue(state.wakeKwsEnabled(started = true, ready = true, wakeRequested = true))
-        assertFalse(state.wakeKwsEnabled(started = true, ready = true, wakeRequested = false))
+        assertTrue(state.wakeKwsEnabled(started = true, ready = true))
 
         state.markConnectionUnready()
         assertFalse(state.captureAllowed())
@@ -46,12 +45,12 @@ class SessionOperationStateTest {
 
         assertFalse(state.acknowledge("start", session.id, session.rev).matched)
         assertFalse(state.captureAllowed())
-        assertFalse(state.wakeKwsEnabled(started = true, ready = true, wakeRequested = true))
+        assertFalse(state.wakeKwsEnabled(started = true, ready = true))
 
         assertEquals(session, state.prepareConnectionStart())
         assertTrue(state.acknowledge("start", session.id, session.rev).startAccepted)
         assertTrue(state.captureAllowed())
-        assertTrue(state.wakeKwsEnabled(started = true, ready = true, wakeRequested = true))
+        assertTrue(state.wakeKwsEnabled(started = true, ready = true))
     }
 
     @Test

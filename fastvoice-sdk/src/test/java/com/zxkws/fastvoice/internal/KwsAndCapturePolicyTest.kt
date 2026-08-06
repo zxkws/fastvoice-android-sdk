@@ -100,7 +100,6 @@ class KwsAndCapturePolicyTest {
             SessionAudioPolicy.wakeKwsEnabled(
                 started = true,
                 ready = true,
-                wakeRequested = true,
                 hasActiveSession = false,
                 endPending = false,
                 sessionAcknowledgedOnConnection = false,
@@ -110,7 +109,15 @@ class KwsAndCapturePolicyTest {
             SessionAudioPolicy.wakeKwsEnabled(
                 started = true,
                 ready = true,
-                wakeRequested = true,
+                hasActiveSession = true,
+                endPending = false,
+                sessionAcknowledgedOnConnection = true,
+            ),
+        )
+        assertFalse(
+            SessionAudioPolicy.wakeKwsEnabled(
+                started = false,
+                ready = true,
                 hasActiveSession = true,
                 endPending = false,
                 sessionAcknowledgedOnConnection = true,
@@ -119,8 +126,7 @@ class KwsAndCapturePolicyTest {
         assertFalse(
             SessionAudioPolicy.wakeKwsEnabled(
                 started = true,
-                ready = true,
-                wakeRequested = false,
+                ready = false,
                 hasActiveSession = true,
                 endPending = false,
                 sessionAcknowledgedOnConnection = true,

@@ -245,11 +245,10 @@ internal class SessionOperationState {
     )
 
     @Synchronized
-    fun wakeKwsEnabled(started: Boolean, ready: Boolean, wakeRequested: Boolean): Boolean =
+    fun wakeKwsEnabled(started: Boolean, ready: Boolean): Boolean =
         SessionAudioPolicy.wakeKwsEnabled(
             started = started,
             ready = ready,
-            wakeRequested = wakeRequested,
             hasActiveSession = desiredSession != null,
             endPending = pendingEnd != null,
             sessionAcknowledgedOnConnection = connectionSessionReady,

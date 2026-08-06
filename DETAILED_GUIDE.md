@@ -199,7 +199,7 @@ android.nonTransitiveRClass=true
 kotlin.code.style=official
 
 # SDK 版本号，所有模块通过 providers.gradleProperty("VERSION_NAME") 读取
-VERSION_NAME=0.9.1
+VERSION_NAME=0.10.0
 ```
 
 ---
@@ -508,11 +508,7 @@ fun interface FastVoiceLogger {
 class FastVoiceConfig @JvmOverloads constructor(
     val endpoint: String,                           // WebSocket 服务端地址
     val tokenProvider: DeviceTokenProvider,          // 令牌提供者
-    val wakeEnabled: Boolean = true,                // 是否启用语音唤醒
     preferredWakeWords: List<String> = emptyList(), // 偏好唤醒词列表
-    val autoReconnect: Boolean = true,              // 断线是否自动重连
-    val bypassSystemProxy: Boolean = false,         // 是否绕过系统代理
-    val allowInsecureConnection: Boolean = false,   // 是否允许非加密连接(ws://)
     val routeAudioToSpeaker: Boolean = true,        // 是否将音频路由到扬声器
     val logger: FastVoiceLogger? = null,            // 可选的日志记录器
 ) {
@@ -526,10 +522,6 @@ class FastVoiceConfig @JvmOverloads constructor(
         require(endpoint.startsWith("wss://", ignoreCase = true) ||
             endpoint.startsWith("ws://", ignoreCase = true)) {
             "endpoint must use ws:// or wss://"
-        }
-        // ws:// 必须显式设置 allowInsecureConnection=true
-        require(allowInsecureConnection || !endpoint.startsWith("ws://", ignoreCase = true)) {
-            "ws:// requires allowInsecureConnection=true"
         }
     }
 
@@ -658,7 +650,7 @@ class FastVoiceClient @JvmOverloads constructor(
 
     // OkHttpClient — WebSocket 的底层 HTTP 客户端
     private val httpClient = OkHttpClient.Builder()
-        .apply { if (config.bypassSystemProxy) proxy(Proxy.NO_PROXY) }
+        .proxy(Proxy.NO_PROXY)                  // 始终绕过系统代理
         .connectTimeout(10, TimeUnit.SECONDS)   // 连接超时 10 秒
         .pingInterval(15, TimeUnit.SECONDS)     // 每 15 秒发 ping 保活
         .readTimeout(0, TimeUnit.MILLISECONDS)  // 读取永不超时（WebSocket 长连接）
@@ -714,7 +706,7 @@ class FastVoiceClient @JvmOverloads constructor(
         // onOpen — 连接成功打开时调用
         override fun onOpen(webSocket: WebSocket, response: Response) {
             // 发送 hello 消息（协议握手第一步）
-            webSocket.send(ProtocolEncoder.hello(config.wakeEnabled))
+            webSocket.send(ProtocolEncoder.hello())
         }
 
         // onMessage(bytes) — 收到二进制消息（音频数据）
@@ -765,7 +757,7 @@ class FastVoiceClient @JvmOverloads constructor(
 
 ```kotlin
     private fun scheduleReconnect(session: Long) {
-        if (!started.get() || !config.autoReconnect) return
+        if (!started.get()) return
         val attempt = reconnectAttempt.getAndIncrement()
         // 指数退避：1s, 2s, 4s, 8s, 15s, 30s
         val delays = longArrayOf(1, 2, 4, 8, 15, 30)
@@ -1090,8 +1082,8 @@ internal object CurrentProtocol {
 internal object ProtocolEncoder {
     // @JvmSynthetic — 对 Java 隐藏（只有 Kotlin 能调用）
     @JvmSynthetic
-    fun hello(wakeEnabled: Boolean): String = JsonEncoder.encode(
-        linkedMapOf("type" to "hello", "wake" to wakeEnabled)
+    fun hello(): String = JsonEncoder.encode(
+        linkedMapOf("type" to "hello", "wake" to true)
     )
     // linkedMapOf — 保持插入顺序的 Map
 
@@ -1568,8 +1560,8 @@ internal object SessionAudioPolicy {
         sessionAcknowledgedOnConnection: Boolean,
     ): Boolean = hasActiveSession && !endPending && sessionAcknowledgedOnConnection
 
-    // KWS 启用条件更严格：还要求 started + ready + wakeRequested
-    fun wakeKwsEnabled(...): Boolean = started && ready && wakeRequested && captureAllowed(...)
+    // KWS 启用条件更严格：还要求 started + ready
+    fun wakeKwsEnabled(...): Boolean = started && ready && captureAllowed(...)
 }
 ```
 
@@ -2098,8 +2090,6 @@ class MainActivity : Activity() {
             val config = FastVoiceConfig(
                 endpoint = endpoint,
                 tokenProvider = DeviceTokenProvider.fixed(token),
-                allowInsecureConnection = endpoint.startsWith("ws://"),
-                bypassSystemProxy = endpoint.startsWith("ws://127.0.0.1"),
                 // 自定义日志输出到 Logcat
                 logger = FastVoiceLogger { level, message, error ->
                     Log.d("FastVoiceSample", "$level $message", error)

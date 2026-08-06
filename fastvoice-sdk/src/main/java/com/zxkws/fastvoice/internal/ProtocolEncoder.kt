@@ -6,10 +6,10 @@ import com.zxkws.fastvoice.SessionSnapshot
 /** Owns every JSON field in the single FastVoice wire protocol. */
 internal object ProtocolEncoder {
     @JvmSynthetic
-    fun hello(wakeEnabled: Boolean): String = JsonEncoder.encode(
+    fun hello(): String = JsonEncoder.encode(
         linkedMapOf(
             "type" to "hello",
-            "wake" to wakeEnabled,
+            "wake" to true,
         ),
     )
 

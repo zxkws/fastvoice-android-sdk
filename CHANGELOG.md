@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.10.0 — 2026-08-06
+
+破坏性变更：`FastVoiceConfig` 移除四个配置项，对应行为改为固定。已接入的宿主
+需要删除对应的构造参数或 `Builder` 调用。
+
+- 删除 `wakeEnabled`：端侧唤醒是必备能力，`hello` 固定上报 `wake: true`，
+  并从 `SessionAudioPolicy.wakeKwsEnabled` 一路移除恒为真的 `wakeRequested`
+  参数。
+- 删除 `autoReconnect`：断线自动重连是必备能力。
+- 删除 `bypassSystemProxy`：SDK 始终使用 `Proxy.NO_PROXY`，不再读取系统代理。
+- 删除 `allowInsecureConnection`：`ws://` 与 `wss://` 一律接受，端点是否加密
+  由部署方决定。`endpoint` 仍必须是这两种 scheme 之一。
+
 ## 0.9.1 — 2026-08-06
 
 - 将 minSdk 从 24 (Android 7.0) 降至 23 (Android 6.0)，扩大设备兼容范围。

@@ -8,14 +8,10 @@ import org.junit.Test
 
 class ProtocolEncoderTest {
     @Test
-    fun helloContainsOnlyTheWakePreference() {
+    fun helloAlwaysRequestsWake() {
         assertEquals(
             "{\"type\":\"hello\",\"wake\":true}",
-            ProtocolEncoder.hello(true),
-        )
-        assertEquals(
-            "{\"type\":\"hello\",\"wake\":false}",
-            ProtocolEncoder.hello(false),
+            ProtocolEncoder.hello(),
         )
     }
 

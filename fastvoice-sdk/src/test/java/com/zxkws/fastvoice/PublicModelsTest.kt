@@ -63,10 +63,10 @@ class PublicModelsTest {
     }
 
     @Test
-    fun insecureWebSocketRequiresExplicitOptIn() {
+    fun endpointMustUseAWebSocketScheme() {
         assertThrows(IllegalArgumentException::class.java) {
             FastVoiceConfig(
-                endpoint = "ws://127.0.0.1:8100/ws",
+                endpoint = "http://127.0.0.1:8100/ws",
                 tokenProvider = tokenProvider(),
             )
         }
@@ -74,7 +74,6 @@ class PublicModelsTest {
         val config = FastVoiceConfig(
             endpoint = "ws://127.0.0.1:8100/ws",
             tokenProvider = tokenProvider(),
-            allowInsecureConnection = true,
         )
         assertEquals("ws://127.0.0.1:8100/ws", config.endpoint)
     }

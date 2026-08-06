@@ -49,15 +49,15 @@ fun interface FastVoiceLogger {
  *
  * The client sends only the opaque bearer token. The server resolves its stable internal device
  * identity; host applications never configure or transmit a separate device ID.
+ *
+ * On-device wake, automatic reconnect, and system-proxy bypass are mandatory SDK behaviour and
+ * are therefore not configurable. Both `ws://` and `wss://` endpoints are accepted; deployments
+ * that need transport encryption are responsible for configuring a `wss://` endpoint.
  */
 class FastVoiceConfig @JvmOverloads constructor(
     val endpoint: String,
     val tokenProvider: DeviceTokenProvider,
-    val wakeEnabled: Boolean = true,
     preferredWakeWords: List<String> = emptyList(),
-    val autoReconnect: Boolean = true,
-    val bypassSystemProxy: Boolean = false,
-    val allowInsecureConnection: Boolean = false,
     val routeAudioToSpeaker: Boolean = true,
     val logger: FastVoiceLogger? = null,
 ) {
@@ -68,9 +68,6 @@ class FastVoiceConfig @JvmOverloads constructor(
         require(endpoint.startsWith("wss://", ignoreCase = true) ||
             endpoint.startsWith("ws://", ignoreCase = true)) {
             "endpoint must use ws:// or wss://"
-        }
-        require(allowInsecureConnection || !endpoint.startsWith("ws://", ignoreCase = true)) {
-            "ws:// requires allowInsecureConnection=true"
         }
     }
 
@@ -84,16 +81,8 @@ class FastVoiceConfig @JvmOverloads constructor(
     /** Never renders endpoint query parameters, a provider, or a credential. */
     override fun toString(): String = buildString {
         append("FastVoiceConfig(endpoint=[configured], tokenProvider=[configured]")
-        append(", wakeEnabled=")
-        append(wakeEnabled)
         append(", preferredWakeWords=")
         append(preferredWakeWords)
-        append(", autoReconnect=")
-        append(autoReconnect)
-        append(", bypassSystemProxy=")
-        append(bypassSystemProxy)
-        append(", allowInsecureConnection=")
-        append(allowInsecureConnection)
         append(", routeAudioToSpeaker=")
         append(routeAudioToSpeaker)
         append(", logger=")
@@ -103,11 +92,7 @@ class FastVoiceConfig @JvmOverloads constructor(
 
     class Builder(private val endpoint: String) {
         private var tokenProvider: DeviceTokenProvider? = null
-        private var wakeEnabled: Boolean = true
         private var preferredWakeWords: List<String> = emptyList()
-        private var autoReconnect: Boolean = true
-        private var bypassSystemProxy: Boolean = false
-        private var allowInsecureConnection: Boolean = false
         private var routeAudioToSpeaker: Boolean = true
         private var logger: FastVoiceLogger? = null
 
@@ -119,18 +104,8 @@ class FastVoiceConfig @JvmOverloads constructor(
             tokenProvider = provider
         }
 
-        fun wakeEnabled(enabled: Boolean) = apply { wakeEnabled = enabled }
-
         fun preferredWakeWords(words: List<String>) = apply {
             preferredWakeWords = ArrayList(words)
-        }
-
-        fun autoReconnect(enabled: Boolean) = apply { autoReconnect = enabled }
-
-        fun bypassSystemProxy(enabled: Boolean) = apply { bypassSystemProxy = enabled }
-
-        fun allowInsecureConnection(allowed: Boolean) = apply {
-            allowInsecureConnection = allowed
         }
 
         fun routeAudioToSpeaker(enabled: Boolean) = apply { routeAudioToSpeaker = enabled }
@@ -140,11 +115,7 @@ class FastVoiceConfig @JvmOverloads constructor(
         fun build(): FastVoiceConfig = FastVoiceConfig(
             endpoint = endpoint,
             tokenProvider = requireNotNull(tokenProvider) { "token is required" },
-            wakeEnabled = wakeEnabled,
             preferredWakeWords = preferredWakeWords,
-            autoReconnect = autoReconnect,
-            bypassSystemProxy = bypassSystemProxy,
-            allowInsecureConnection = allowInsecureConnection,
             routeAudioToSpeaker = routeAudioToSpeaker,
             logger = logger,
         )

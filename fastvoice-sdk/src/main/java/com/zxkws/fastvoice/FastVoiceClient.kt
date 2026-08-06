@@ -81,7 +81,7 @@ class FastVoiceClient @JvmOverloads constructor(
     private var reconnectFuture: ScheduledFuture<*>? = null
 
     private val httpClient = OkHttpClient.Builder()
-        .apply { if (config.bypassSystemProxy) proxy(Proxy.NO_PROXY) }
+        .proxy(Proxy.NO_PROXY)
         .connectTimeout(10, TimeUnit.SECONDS)
         .pingInterval(15, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)
@@ -378,7 +378,7 @@ class FastVoiceClient @JvmOverloads constructor(
                 webSocket.close(1_000, "stale connection")
                 return
             }
-            webSocket.send(ProtocolEncoder.hello(config.wakeEnabled))
+            webSocket.send(ProtocolEncoder.hello())
         }
 
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
@@ -955,7 +955,7 @@ class FastVoiceClient @JvmOverloads constructor(
         socket.get()?.takeIf { ready.get() }?.send(message) == true
 
     private fun canArmWake(): Boolean =
-        started.get() && ready.get() && config.wakeEnabled &&
+        started.get() && ready.get() &&
             wakeWords.get().isNotEmpty() && playbackId.get() < 0 &&
             !audio.isUplinkEnabled() && isSessionCaptureAllowed()
 
@@ -966,7 +966,6 @@ class FastVoiceClient @JvmOverloads constructor(
             sessionState.wakeKwsEnabled(
                 started = started.get(),
                 ready = ready.get(),
-                wakeRequested = config.wakeEnabled,
             ),
         )
     }
@@ -1021,7 +1020,7 @@ class FastVoiceClient @JvmOverloads constructor(
     }
 
     private fun scheduleReconnect(session: Long) {
-        if (!started.get() || !config.autoReconnect || !sessions.isCurrent(session)) return
+        if (!started.get() || !sessions.isCurrent(session)) return
         val attempt = reconnectAttempt.getAndIncrement()
         val delays = longArrayOf(1, 2, 4, 8, 15, 30)
         val delay = delays[minOf(attempt, delays.lastIndex)]

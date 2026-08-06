@@ -11,10 +11,9 @@ internal object SessionAudioPolicy {
     fun wakeKwsEnabled(
         started: Boolean,
         ready: Boolean,
-        wakeRequested: Boolean,
         hasActiveSession: Boolean,
         endPending: Boolean,
         sessionAcknowledgedOnConnection: Boolean,
-    ): Boolean = started && ready && wakeRequested &&
+    ): Boolean = started && ready &&
         captureAllowed(hasActiveSession, endPending, sessionAcknowledgedOnConnection)
 }
