@@ -178,6 +178,61 @@ SDK 不根据 `key` 或 `attributes` 推断规则。绑定请求必须引用当�
 `PlaybackFailed(playbackId, contentId, code)` 返回。普通语音回复的
 `contentId` 为 `null`。
 
+## 主动播报
+
+内容请求不依赖唤醒。宿主在任意时刻调用 `playContent` 都可以让设备主动开口，
+典型场景是到站播报：车辆到达某个位置时由宿主上报，服务端下发对应音频。
+
+播报内容由服务端决定。SDK 不解释 `key` 和 `attributes`，因此措辞、音色、
+是否在末尾追问都在服务端控制。
+
+```kotlin
+// 到达小龙哥铁路桥时调用。session = null 表示未绑定请求，不要求当前存在会话。
+client.playContent(
+    ContentRequest(
+        id = "arrival-xiaonggeqiao-$arrivalSequence",  // 幂等 ID，必须是 ASCII
+        key = "arrival_announcement",
+        session = null,
+        attributes = mapOf(
+            "station" to "小龙哥铁路桥",   // 中文放这里，服务端据此组织播报
+            "next_station" to "运河广场",
+            "offer_narration" to true,     // 是否在末尾追问"需要讲解一下吗"
+        ),
+    ),
+)
+```
+
+服务端收到后下发音频，设备播出类似"我们到达小龙哥铁路桥了，需要讲解一下吗"。
+措辞和音色都在服务端，改播报内容不需要发新版 App。
+
+用 `id` 关联该请求的后续事件：
+
+```kotlin
+is FastVoiceEvent.ContentAck ->
+    if (event.id == pendingArrivalId) markArrivalAccepted()
+
+is FastVoiceEvent.PlaybackFinished ->
+    if (event.contentId == pendingArrivalId) markArrivalAnnounced()
+
+is FastVoiceEvent.PlaybackFailed ->
+    if (event.contentId == pendingArrivalId) retryArrival(event.code)
+```
+
+`ContentAck` 只表示服务端接受了请求，真正播完要等
+`PlaybackFinished`。普通语音回复的 `contentId` 为 `null`，据此可以把主动播报和
+对话回复区分开。
+
+`id` 和 `key` 必须匹配 `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`，不能包含中文，
+否则构造 `ContentRequest` 时就会抛 `IllegalArgumentException`。站名等中文内容
+放进 `attributes`，那里不受此限制。
+
+如果播报末尾要追问并听取用户应答，必须先有一个已确认的会话：麦克风上行和唤醒
+都要求 `SessionAck(action="start")` 已到达。顺序是先 `startSession` 并等待
+确认，再在到站时 `playContent`；此后用户可以直接应答，无需唤醒词。
+
+纯播报设备（从不听用户说话）不需要 `startSession`，只用未绑定的
+`playContent` 即可。
+
 ## 线程与安全
 
 - 回调统一在 Android 主线程触发。
