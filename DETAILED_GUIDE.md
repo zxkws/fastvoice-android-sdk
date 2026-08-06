@@ -80,7 +80,7 @@ fastvoice-android-sdk/
 │   └── src/main/
 │       ├── AndroidManifest.xml
 │       ├── assets/fastvoice/    ← KWS 模型文件（随 AAR 打包）
-│       ├── jniLibs/arm64-v8a/   ← 预编译的 .so 原生库
+│       ├── jniLibs/<abi>/       ← 预编译的 .so 原生库（arm64-v8a / armeabi-v7a）
 │       └── java/com/zxkws/fastvoice/
 │           ├── *.kt             ← 5 个公共 API 文件
 │           └── internal/        ← 14 个内部实现文件
@@ -199,7 +199,7 @@ android.nonTransitiveRClass=true
 kotlin.code.style=official
 
 # SDK 版本号，所有模块通过 providers.gradleProperty("VERSION_NAME") 读取
-VERSION_NAME=0.9.0
+VERSION_NAME=0.9.1
 ```
 
 ---
@@ -286,12 +286,15 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        // minSdk = 24 — SDK 最低支持 Android 7.0（API 24）
-        minSdk = 24
+        // minSdk = 23 — SDK 最低支持 Android 6.0（API 23）
+        minSdk = 23
+        // targetSdk = 35 — 与 compileSdk 一致，采用最新平台行为
+        targetSdk = 35
 
         ndk {
-            // 只编译 arm64-v8a 架构（现代手机的 64 位 ARM）
-            abiFilters += "arm64-v8a"
+            // 64 位 ARM 与 32 位 ARM（旧设备）。NDK 自 r17 起已移除
+            // armeabi（ARMv5/v6），因此无法提供该 ABI。
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
         }
 
         // consumerProguardFiles — 给使用者的混淆规则（打包进 AAR）
@@ -679,7 +682,8 @@ class FastVoiceClient @JvmOverloads constructor(
         }
 
         // 检查 CPU 架构
-        if (Build.SUPPORTED_ABIS.none { it == "arm64-v8a" }) {
+        val supportedAbis = setOf("arm64-v8a", "armeabi-v7a")
+        if (Build.SUPPORTED_ABIS.none { it in supportedAbis }) {
             emitLocalError("unsupported_abi", Build.SUPPORTED_ABIS.joinToString())
             return false
         }
@@ -1860,47 +1864,65 @@ Java_com_zxkws_fastvoice_internal_WebRtcEchoCanceller_nativeClose(
 
 ### 6.2 build-webrtc-native.sh
 
-编译 WebRTC AEC3 原生库的 Shell 脚本。
+编译 WebRTC AEC3 原生库的 Shell 脚本，支持按 ABI 构建。
 
 ```bash
-#!/bin/zsh
+./fastvoice-sdk/build-webrtc-native.sh              # 全部 ABI
+./fastvoice-sdk/build-webrtc-native.sh armeabi-v7a  # 单个 ABI
+```
+
+```bash
+#!/usr/bin/env bash
 set -euo pipefail
 # set -e：命令失败立即退出
 # set -u：使用未定义变量报错
 # set -o pipefail：管道中任何命令失败都算失败
 
-# 1. 定位 Android NDK
+# 1. 定位 Android NDK。android_api 必须与 SDK 的 minSdk 一致，
+#    否则原生库会引用旧系统上不存在的平台符号而加载失败。
 ndk_version=27.3.13750724
+android_api=23
 toolchain_dir="$ndk_dir/toolchains/llvm/prebuilt/$host_tag"
 
-# 2. 克隆 WebRTC 音频处理源码
+# 2. 克隆并固定 WebRTC 音频处理源码（两个 ABI 共享同一份源码树）
 git clone --depth 1 --branch v2.1 \
     "https://gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing.git"
 
-# 3. 使用 Meson 构建系统交叉编译
-#    --cross-file — 交叉编译配置（指定 ARM64 编译器）
+# 3. 逐个 ABI 用 Meson 交叉编译
+#    交叉配置由 android-<abi>.ini.in 模板生成，@TOOLCHAIN_DIR@ 在运行时替换，
+#    因此脚本不含任何机器相关的绝对路径。
 meson setup "$build_dir" "$source_dir" \
     --cross-file "$cross_file" \
-    --wrap-mode=forcefallback  # 自动下载缺失依赖（如 abseil）
+    --wrap-mode=forcefallback \  # 自动下载缺失依赖（如 abseil）
+    -Dneon=enabled               # 启用 NEON SIMD 加速
 meson compile -C "$build_dir"
 
 # 4. 编译 JNI 桥接 .so
-"$toolchain_dir/bin/aarch64-linux-android26-clang++" \
+#    --no-undefined 让缺失符号在链接期就报错，而不是推迟到设备上 dlopen 才崩。
+"$clang" \
     -shared -fPIC -O3 -std=c++17 \     # 共享库、位置无关代码、O3 优化
+    "${jni_flags[@]}" \                # armv7 需要 -mfpu=neon
     "$native_dir/webrtc_aec3_jni.cpp" \
+    -Wl,--no-undefined \
     -l:libwebrtc-audio-processing-2.so \ # 链接 WebRTC 库
     -o "$jni_dir/libfastvoice_webrtc_aec3.so"
 
 # 5. Strip 符号（减小 .so 体积）
 "$toolchain_dir/bin/llvm-strip" "$jni_dir/"*.so
 
-# 最终产物：
+# 每个 ABI 的最终产物（直接写入 src/main/jniLibs/<abi>/）：
 # - libwebrtc-audio-processing-2.so  ← WebRTC 核心库
 # - libfastvoice_webrtc_aec3.so      ← JNI 桥接层
 # - libc++_shared.so                 ← C++ 标准库
 ```
 
-**交叉编译 = 在电脑（x86）上编译出手机（ARM64）能运行的二进制文件。**
+**交叉编译 = 在电脑（x86）上编译出手机（ARM）能运行的二进制文件。**
+
+armeabi-v7a 有一个额外的坑：Meson 会给 32 位目标自动加
+`-D_FILE_OFFSET_BITS=64`，而 bionic 把 `fseeko`/`ftello` 标记为
+`__INTRODUCED_IN(24)`，导致 API 23 编译失败。交叉配置里用
+`-U_FILE_OFFSET_BITS -D_FILE_OFFSET_BITS=32` 覆盖即可。
+**
 
 
 ---
@@ -1923,12 +1945,12 @@ android {
 
     defaultConfig {
         applicationId = "com.zxkws.fastvoice.sample"  // APK 唯一标识
-        minSdk = 24
+        minSdk = 23
         targetSdk = 35        // 目标 SDK（影响运行时行为）
         versionCode = 1       // 内部版本号（整数，每次发布递增）
         versionName = providers.gradleProperty("VERSION_NAME").get()  // 显示版本
 
-        ndk { abiFilters += "arm64-v8a" }
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
     }
 }
 
@@ -2141,7 +2163,7 @@ name: Android SDK
 on:
   push:
     branches: [main]     # 推送到 main 分支
-    tags: ["*.*.*"]      # 推送版本标签（如 0.9.0）
+    tags: ["*.*.*"]      # 推送版本标签（如 0.9.1）
   pull_request:
     branches: [main]     # PR 到 main
   workflow_dispatch:      # 手动触发
@@ -2184,8 +2206,10 @@ jobs:
       # 验证 AAR 内容完整
       - name: Verify distributable AAR
         run: |
-          unzip -l "$aar" | grep -q "jni/arm64-v8a/libwebrtc-audio-processing-2.so"
-          unzip -l "$aar" | grep -q "jni/arm64-v8a/libfastvoice_webrtc_aec3.so"
+          for abi in arm64-v8a armeabi-v7a; do
+            unzip -l "$aar" | grep -q "jni/$abi/libwebrtc-audio-processing-2.so"
+            unzip -l "$aar" | grep -q "jni/$abi/libfastvoice_webrtc_aec3.so"
+          done
           # ... 验证所有必须文件都在 AAR 中
 
   release:               # 发布 Job（仅标签触发）
@@ -2316,7 +2340,7 @@ install:
 └─────────────────────────────────────────────────────────┘
                            │
 ┌─────────────────────────────────────────────────────────┐
-│               Native .so 库 (arm64-v8a)                  │
+│      Native .so 库 (arm64-v8a / armeabi-v7a)             │
 │  libwebrtc-audio-processing-2.so  (WebRTC 核心)          │
 │  libfastvoice_webrtc_aec3.so      (JNI 桥接)            │
 │  libsherpa-onnx-jni.so            (KWS 推理引擎)        │
