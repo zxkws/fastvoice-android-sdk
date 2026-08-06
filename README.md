@@ -181,31 +181,73 @@ SDK 不根据 `key` 或 `attributes` 推断规则。绑定请求必须引用当�
 ## 主动播报
 
 内容请求不依赖唤醒。宿主在任意时刻调用 `playContent` 都可以让设备主动开口，
-典型场景是到站播报：车辆到达某个位置时由宿主上报，服务端下发对应音频。
+典型场景是到站播报。
 
-播报内容由服务端决定。SDK 不解释 `key` 和 `attributes`，因此措辞、音色、
-是否在末尾追问都在服务端控制。
+`id` 和 `key` 是两件不同的事：
+
+- `id` 是这一次请求的幂等句柄。服务端按 `id` 加完整报文做指纹：同 `id` 同内容
+  直接回 `ContentAck`，同 `id` 不同内容报 `content_id_reused`。断线重发依赖它，
+  所以必须由宿主提供一个可复现的值，SDK 不能替你生成。
+- `key` 选服务端注册了哪条内容策略。合法取值由服务端决定，SDK 不解释。
+
+`attributes` 的字段名同样由服务端定义，SDK 只做结构校验后原样转发。下面的例子
+对应本项目服务端当前注册的两个 key，权威定义见服务端仓库的 `PROTOCOL.md`。
+
+### 到站播报：`arrival_prompt`
+
+这个 key **要求存在已确认的会话**，并且 `attributes.spot_id` 必须等于当前会话
+快照里的 `current_spot_id`；报文字段集必须精确匹配，不能多也不能少。
 
 ```kotlin
-// 到达小龙哥铁路桥时调用。session = null 表示未绑定请求，不要求当前存在会话。
+// 1. 上车时开启会话，用 current_spot_id 表示当前位置。
+client.startSession(
+    SessionSnapshot(
+        id = "order-001",
+        rev = 1,
+        attributes = mapOf("current_spot_id" to "boarding_point"),
+    ),
+)
+
+// 2. 到达小龙哥铁路桥时，先把会话推进到新位置。
+client.updateSession(
+    SessionSnapshot(
+        id = "order-001",
+        rev = 2,
+        attributes = mapOf("current_spot_id" to "xiaongge_bridge"),
+    ),
+)
+
+// 3. 绑定这个精确 revision 触发播报。
 client.playContent(
     ContentRequest(
-        id = "arrival-xiaonggeqiao-$arrivalSequence",  // 幂等 ID，必须是 ASCII
-        key = "arrival_announcement",
-        session = null,
-        attributes = mapOf(
-            "station" to "小龙哥铁路桥",   // 中文放这里，服务端据此组织播报
-            "next_station" to "运河广场",
-            "offer_narration" to true,     // 是否在末尾追问"需要讲解一下吗"
-        ),
+        id = "arrival-order-001-rev-2",   // 幂等 ID，重试必须用同一个
+        key = "arrival_prompt",
+        session = SessionRef("order-001", 2),
+        attributes = mapOf("spot_id" to "xiaongge_bridge"),
     ),
 )
 ```
 
-服务端收到后下发音频，设备播出类似"我们到达小龙哥铁路桥了，需要讲解一下吗"。
-措辞和音色都在服务端，改播报内容不需要发新版 App。
+播报正文由服务端从已审核的内容库按 `spot_id` 取出，SDK 和宿主都不传文案。
+"我们到达小龙哥铁路桥了，需要讲解一下吗"这类措辞、以及末尾是否追问，全部在
+服务端，改播报内容不需要发新版 App。
 
-用 `id` 关联该请求的后续事件：
+追问之后用户直接回答"好"或"不用"即可，无需唤醒词——但前提是会话已确认，因为
+麦克风上行要求 `SessionAck(action="start")` 已到达。答"好"时服务端会继续下发
+该位置的完整讲解。
+
+`current_spot_id` 与 `spot_id` 由服务端做格式校验（小写字母、数字、下划线），
+中文站名不要放进这两个字段。
+
+### 无会话固定内容：`park_welcome`
+
+这个 key 相反，**要求当前没有活动会话**，否则报 `active_session_forbidden`。
+
+```kotlin
+client.playContent(ContentRequest("cruise-001", "park_welcome"))
+```
+
+### 关联播报结果
 
 ```kotlin
 is FastVoiceEvent.ContentAck ->
@@ -218,20 +260,11 @@ is FastVoiceEvent.PlaybackFailed ->
     if (event.contentId == pendingArrivalId) retryArrival(event.code)
 ```
 
-`ContentAck` 只表示服务端接受了请求，真正播完要等
-`PlaybackFinished`。普通语音回复的 `contentId` 为 `null`，据此可以把主动播报和
-对话回复区分开。
+`ContentAck` 只表示服务端接受了请求，真正播完要等 `PlaybackFinished`。普通语音
+回复的 `contentId` 为 `null`，据此可以把主动播报和对话回复区分开。
 
 `id` 和 `key` 必须匹配 `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`，不能包含中文，
-否则构造 `ContentRequest` 时就会抛 `IllegalArgumentException`。站名等中文内容
-放进 `attributes`，那里不受此限制。
-
-如果播报末尾要追问并听取用户应答，必须先有一个已确认的会话：麦克风上行和唤醒
-都要求 `SessionAck(action="start")` 已到达。顺序是先 `startSession` 并等待
-确认，再在到站时 `playContent`；此后用户可以直接应答，无需唤醒词。
-
-纯播报设备（从不听用户说话）不需要 `startSession`，只用未绑定的
-`playContent` 即可。
+否则构造 `ContentRequest` 时就会抛 `IllegalArgumentException`。
 
 ## 线程与安全
 
