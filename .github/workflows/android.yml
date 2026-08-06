@@ -60,16 +60,20 @@ jobs:
           listing="$RUNNER_TEMP/fastvoice-aar-listing.txt"
           unzip -Z1 "$aar" > "$listing"
           grep -Fxq "libs/sherpa-onnx-1.13.2-classes.jar" "$listing"
-          grep -Fxq "jni/arm64-v8a/libonnxruntime.so" "$listing"
-          grep -Fxq "jni/arm64-v8a/libsherpa-onnx-jni.so" "$listing"
-          grep -Fxq "jni/arm64-v8a/libwebrtc-audio-processing-2.so" "$listing"
-          grep -Fxq "jni/arm64-v8a/libfastvoice_webrtc_aec3.so" "$listing"
-          grep -Fxq "jni/arm64-v8a/libc++_shared.so" "$listing"
+          for abi in arm64-v8a armeabi-v7a; do
+            grep -Fxq "jni/$abi/libonnxruntime.so" "$listing"
+            grep -Fxq "jni/$abi/libsherpa-onnx-jni.so" "$listing"
+            grep -Fxq "jni/$abi/libwebrtc-audio-processing-2.so" "$listing"
+            grep -Fxq "jni/$abi/libfastvoice_webrtc_aec3.so" "$listing"
+            grep -Fxq "jni/$abi/libc++_shared.so" "$listing"
+          done
           grep -Fxq "assets/fastvoice/licenses/Apache-2.0.txt" "$listing"
           grep -Fxq "assets/fastvoice/licenses/NOTICE.txt" "$listing"
           grep -Fxq "assets/fastvoice/licenses/ONNX-Runtime-MIT.txt" "$listing"
           grep -Fxq "assets/fastvoice/licenses/WebRTC-BSD-3-Clause.txt" "$listing"
-          if grep -Eqi "silero|jni/armeabi-v7a/" "$listing"; then
+          # Silero VAD was removed in 0.9.0 and must not reappear. armeabi
+          # (ARMv5/v6) is unsupported by the NDK and must never be shipped.
+          if grep -Eqi "silero|jni/armeabi/" "$listing"; then
             exit 1
           fi
           version="$(./gradlew -q :fastvoice-sdk:properties | sed -n 's/^version: //p' | head -n 1)"

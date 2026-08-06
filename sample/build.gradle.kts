@@ -9,13 +9,13 @@ android {
 
     defaultConfig {
         applicationId = "com.zxkws.fastvoice.sample"
-        minSdk = 24
+        minSdk = 23
         targetSdk = 35
         versionCode = 1
         versionName = providers.gradleProperty("VERSION_NAME").get()
 
         ndk {
-            abiFilters += "arm64-v8a"
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
         }
     }
 

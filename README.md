@@ -9,10 +9,13 @@ SDK 不调用 Android `TextToSpeech`；所有可听语音都来自服务端下�
 
 ## 环境要求
 
-- Android API 24+
-- `arm64-v8a`
+- Android API 23+（Android 6.0）
+- `arm64-v8a` 或 `armeabi-v7a`
 - `android.permission.RECORD_AUDIO`
 - JDK 17（构建 SDK）
+
+`armeabi-v7a` 的原生库要求设备支持 NEON（ARMv7 Android 设备普遍具备）。
+NDK 自 r17 起已移除 `armeabi`（ARMv5/v6），因此 SDK 无法提供该 ABI。
 
 ## 构建并引入当前 AAR
 

@@ -5,7 +5,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
-import android.media.AudioFocusRequest
+// AudioFocusRequest (API 26+) is referenced via Any to avoid class-loading failures on API 23.
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
@@ -147,7 +147,8 @@ internal class AudioEngine(
     private var previousAudioMode: Int? = null
     private var previousSpeakerphone: Boolean? = null
     private var previousCommunicationDevice: AudioDeviceInfo? = null
-    private var focusRequest: AudioFocusRequest? = null
+    // Typed as Any? to avoid referencing the API 26+ AudioFocusRequest class on API 23 devices.
+    private var focusRequest: Any? = null
 
     @Synchronized
     fun start(): Boolean {
@@ -1267,7 +1268,7 @@ internal class AudioEngine(
             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
             .build()
         if (Build.VERSION.SDK_INT >= 26) {
-            focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+            focusRequest = android.media.AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
                 .setAudioAttributes(attributes)
                 .setOnAudioFocusChangeListener { }
                 .build()
@@ -1295,7 +1296,7 @@ internal class AudioEngine(
 
     private fun restoreAudioRoute() {
         if (Build.VERSION.SDK_INT >= 26) {
-            focusRequest?.let(audioManager::abandonAudioFocusRequest)
+            (focusRequest as? android.media.AudioFocusRequest)?.let(audioManager::abandonAudioFocusRequest)
             focusRequest = null
         } else {
             @Suppress("DEPRECATION")

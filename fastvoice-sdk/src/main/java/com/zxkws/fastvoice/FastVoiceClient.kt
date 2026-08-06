@@ -172,7 +172,8 @@ class FastVoiceClient @JvmOverloads constructor(
             emitLocalError("microphone_permission_missing")
             return false
         }
-        if (Build.SUPPORTED_ABIS.none { it == "arm64-v8a" }) {
+        val supportedAbis = setOf("arm64-v8a", "armeabi-v7a")
+        if (Build.SUPPORTED_ABIS.none { it in supportedAbis }) {
             emitLocalError("unsupported_abi", Build.SUPPORTED_ABIS.joinToString())
             return false
         }

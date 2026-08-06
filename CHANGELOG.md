@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.9.1 — 2026-08-06
+
+- 将 minSdk 从 24 (Android 7.0) 降至 23 (Android 6.0)，扩大设备兼容范围。
+- 新增 armeabi-v7a ABI 支持：为全部 7 个原生库提供 32 位 ARM 版本，其中
+  `libwebrtc-audio-processing-2.so` 与 `libfastvoice_webrtc_aec3.so` 由源码
+  交叉编译并启用 NEON。
+- arm64-v8a 的原生库改按 API 23 重新编译（此前为 API 26），否则在 Android 6
+  的 64 位设备上会因缺少平台符号而加载失败。
+- `build-webrtc-native.sh` 改为按 ABI 参数构建，两个 ABI 共享同一份固定版本
+  上游源码，并统一用 `-Wl,--no-undefined` 链接以在构建期暴露缺失符号。
+- 更新 ABI 检查逻辑，同时接受 arm64-v8a 和 armeabi-v7a。
+- 修复 `AudioFocusRequest` (API 26+) 类引用在 API 23 设备上的潜在类加载风险。
+
 ## 0.9.0 — 2026-07-28
 
 - 删除 Android `TextToSpeech` 本地提示音及 `localFallbackPromptEnabled` API；

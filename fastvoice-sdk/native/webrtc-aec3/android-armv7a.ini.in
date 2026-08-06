@@ -1,0 +1,20 @@
+[binaries]
+c = '@TOOLCHAIN_DIR@/bin/armv7a-linux-androideabi23-clang'
+cpp = '@TOOLCHAIN_DIR@/bin/armv7a-linux-androideabi23-clang++'
+ar = '@TOOLCHAIN_DIR@/bin/llvm-ar'
+strip = '@TOOLCHAIN_DIR@/bin/llvm-strip'
+
+[host_machine]
+system = 'android'
+cpu_family = 'arm'
+cpu = 'armv7-a'
+endian = 'little'
+
+[built-in options]
+buildtype = 'release'
+default_library = 'shared'
+# Meson defaults 32-bit targets to _FILE_OFFSET_BITS=64, which hides fseeko/ftello
+# behind __INTRODUCED_IN(24) in bionic and breaks the API 23 build. Cross-file args
+# are emitted last, so redefining to 32 wins.
+c_args = ['-fPIC', '-mfpu=neon', '-mfloat-abi=softfp', '-U_FILE_OFFSET_BITS', '-D_FILE_OFFSET_BITS=32']
+cpp_args = ['-fPIC', '-mfpu=neon', '-mfloat-abi=softfp', '-U_FILE_OFFSET_BITS', '-D_FILE_OFFSET_BITS=32']

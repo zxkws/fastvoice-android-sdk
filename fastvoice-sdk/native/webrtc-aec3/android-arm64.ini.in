@@ -1,6 +1,6 @@
 [binaries]
-c = '@TOOLCHAIN_DIR@/bin/aarch64-linux-android26-clang'
-cpp = '@TOOLCHAIN_DIR@/bin/aarch64-linux-android26-clang++'
+c = '@TOOLCHAIN_DIR@/bin/aarch64-linux-android23-clang'
+cpp = '@TOOLCHAIN_DIR@/bin/aarch64-linux-android23-clang++'
 ar = '@TOOLCHAIN_DIR@/bin/llvm-ar'
 strip = '@TOOLCHAIN_DIR@/bin/llvm-strip'
 
