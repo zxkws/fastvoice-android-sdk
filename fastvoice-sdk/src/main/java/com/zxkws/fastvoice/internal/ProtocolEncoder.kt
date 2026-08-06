@@ -1,8 +1,5 @@
 package com.zxkws.fastvoice.internal
 
-import com.zxkws.fastvoice.ContentRequest
-import com.zxkws.fastvoice.SessionSnapshot
-
 /** Owns every JSON field in the single FastVoice wire protocol. */
 internal object ProtocolEncoder {
     @JvmSynthetic
@@ -14,47 +11,27 @@ internal object ProtocolEncoder {
     )
 
     @JvmSynthetic
-    fun sessionStart(snapshot: SessionSnapshot): String =
-        sessionSnapshot("session.start", snapshot)
-
-    @JvmSynthetic
-    fun sessionUpdate(snapshot: SessionSnapshot): String =
-        sessionSnapshot("session.update", snapshot)
-
-    private fun sessionSnapshot(
-        type: String,
-        snapshot: SessionSnapshot,
-    ): String = JsonEncoder.encode(
-        linkedMapOf(
-            "type" to type,
-            "id" to snapshot.id,
-            "rev" to snapshot.rev,
-            "attributes" to snapshot.attributes,
-        ),
-    )
-
-    @JvmSynthetic
-    fun sessionEnd(id: String, rev: Long, reason: String): String = JsonEncoder.encode(
-        linkedMapOf(
-            "type" to "session.end",
-            "id" to id,
-            "rev" to rev,
-            "reason" to reason,
-        ),
-    )
-
-    @JvmSynthetic
-    fun contentPlay(request: ContentRequest): String = JsonEncoder.encode(
+    fun locationUpdate(park: String, spot: String?): String = JsonEncoder.encode(
         linkedMapOf<String, Any?>(
-            "type" to "content.play",
-            "id" to request.id,
-            "key" to request.key,
-            "attributes" to request.attributes,
+            "type" to "location.update",
+            "park" to park,
         ).apply {
-            request.session?.let {
-                put("session_id", it.id)
-                put("session_rev", it.rev)
-            }
+            if (spot != null) put("spot", spot)
+        },
+    )
+
+    @JvmSynthetic
+    fun locationClear(): String = JsonEncoder.encode(
+        linkedMapOf("type" to "location.clear"),
+    )
+
+    @JvmSynthetic
+    fun welcomePlay(park: String, spot: String?): String = JsonEncoder.encode(
+        linkedMapOf<String, Any?>(
+            "type" to "welcome.play",
+            "park" to park,
+        ).apply {
+            if (spot != null) put("spot", spot)
         },
     )
 

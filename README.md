@@ -1,11 +1,9 @@
 # FastVoice Android SDK
 
-FastVoice 是一个面向 Android 的通用实时语音 SDK。它负责设备鉴权、WebSocket
-连接、麦克风采集、Opus 上下行、端侧唤醒与控制词、流式播放、打断和重连。
+FastVoice 是面向 Android 的实时语音 SDK。负责设备鉴权、WebSocket 连接、麦克风
+采集、Opus 编解码、端侧唤醒词、流式播放、打断和断线重连。
 
-SDK 只理解通用的会话、内容请求和播放生命周期。应用自己的字段放在
-`attributes` 中，SDK 会验证并原样发送，不解释业务含义。
-SDK 不调用 Android `TextToSpeech`；所有可听语音都来自服务端下发的音频。
+SDK 不调用 Android `TextToSpeech`；所有可听语音都来自服务端。
 
 ## 环境要求
 
@@ -14,19 +12,14 @@ SDK 不调用 Android `TextToSpeech`；所有可听语音都来自服务端下�
 - `android.permission.RECORD_AUDIO`
 - JDK 17（构建 SDK）
 
-`armeabi-v7a` 的原生库要求设备支持 NEON（ARMv7 Android 设备普遍具备）。
-NDK 自 r17 起已移除 `armeabi`（ARMv5/v6），因此 SDK 无法提供该 ABI。
-
-## 构建并引入当前 AAR
-
-先构建当前源码：
+## 引入 AAR
 
 ```shell
 ./gradlew :fastvoice-sdk:check :fastvoice-sdk:assembleRelease
 ```
 
-把 `fastvoice-sdk/build/outputs/aar/fastvoice-sdk-release.aar` 复制到应用模块的
-`libs/`。独立 AAR 不携带 Maven metadata，因此应用模块还要显式声明运行时依赖：
+将 `fastvoice-sdk/build/outputs/aar/fastvoice-sdk-release.aar` 复制到应用模块
+`libs/`，再声明运行时依赖：
 
 ```kotlin
 dependencies {
@@ -37,261 +30,238 @@ dependencies {
 }
 ```
 
-## Kotlin
+## 快速集成（Kotlin）
 
 ```kotlin
-val config = FastVoiceConfig(
-    endpoint = "wss://voice.example.com/ws",
-    tokenProvider = DeviceTokenProvider { loadCurrentDeviceToken() },
-)
-
-val client = FastVoiceClient(applicationContext, config) { event ->
+// 1. 创建客户端 — 只需 endpoint 和 token
+val client = FastVoiceClient(
+    applicationContext,
+    FastVoiceConfig(
+        endpoint = "wss://voice.example.com/ws",
+        tokenProvider = DeviceTokenProvider { loadToken() },
+    ),
+) { event ->
     when (event) {
-        is FastVoiceEvent.StateChanged -> stateView.text = event.state.value
-        is FastVoiceEvent.Transcript -> transcriptView.text = event.text
-        is FastVoiceEvent.SessionAck -> sessionView.text = event.toString()
-        is FastVoiceEvent.ContentAck -> contentView.text = event.toString()
-        is FastVoiceEvent.PlaybackFinished -> playbackView.text = event.toString()
-        is FastVoiceEvent.PlaybackFailed -> playbackView.text = event.toString()
-        is FastVoiceEvent.Error -> errorView.text = event.error.toString()
+        is FastVoiceEvent.StateChanged -> updateState(event.state.value)
+        is FastVoiceEvent.Transcript  -> showTranscript(event.text)
+        is FastVoiceEvent.LocationAck -> log("位置已确认")
+        is FastVoiceEvent.WelcomeAck  -> log("欢迎词已确认")
+        is FastVoiceEvent.PlaybackFinished -> log("播放完成")
+        is FastVoiceEvent.PlaybackFailed   -> log("播放失败: ${event.code}")
+        is FastVoiceEvent.Error       -> showError(event.error)
     }
 }
 
+// 2. 启动 — 连上就能唤醒说话
 client.start()
 
-client.startSession(
-    SessionSnapshot(
-        id = "session-001",
-        rev = 1,
-        attributes = mapOf(
-            "locale" to "zh-CN",
-            "application_mode" to "guided",
-        ),
-    ),
-)
+// 3. 上报位置 — 服务端自动播到站介绍
+client.updateLocation(park = "南苑森林湿地公园", spot = "北一门")
 
-client.updateSession(
-    SessionSnapshot(
-        id = "session-001",
-        rev = 2,
-        attributes = mapOf(
-            "locale" to "zh-CN",
-            "application_mode" to "self_service",
-        ),
-    ),
-)
+// 4. 到下一站
+client.updateLocation(park = "南苑森林湿地公园", spot = "1907站")
 
-client.playContent(
-    ContentRequest(
-        id = "content-request-001",
-        key = "welcome",
-        session = SessionRef("session-001", 2),
-        attributes = mapOf("variant" to "short"),
-    ),
-)
+// 5. 播放欢迎词（主动触发）
+client.playWelcome(park = "南苑森林湿地公园")
 
-client.playContent(
-    ContentRequest(
-        id = "content-request-002",
-        key = "idle_message",
-        session = null,
-        attributes = emptyMap(),
-    ),
-)
-
-client.endSession("session-001", rev = 3, reason = "completed")
+// 6. 清除位置 + 对话历史
+client.clearLocation()
 ```
 
-在宿主不再拥有前台语音时调用 `stop()`；永久释放实例时调用 `close()`。
-
-## Java
+## 快速集成（Java）
 
 ```java
 FastVoiceConfig config = FastVoiceConfig.builder("wss://voice.example.com/ws")
-    .token("short-lived-token")
+    .token("your-device-token")
     .build();
 
 FastVoiceClient client = new FastVoiceClient(
     getApplicationContext(),
     config,
-    event -> eventView.setText(event.toString())
+    event -> Log.d("FV", event.toString())
 );
 
 client.start();
-
-SessionSnapshot snapshot = SessionSnapshot.builder("session-001", 1L)
-    .putAttribute("locale", "zh-CN")
-    .putAttribute("application_mode", "guided")
-    .build();
-client.startSession(snapshot);
-
-ContentRequest request = ContentRequest.builder("content-request-001", "welcome")
-    .session(SessionRef.of("session-001", 1L))
-    .putAttribute("variant", "short")
-    .build();
-client.playContent(request);
-
-client.endSession("session-001", 2L, "completed");
+client.updateLocation("南苑森林湿地公园", "北一门");
+client.playWelcome("南苑森林湿地公园", null);
+client.clearLocation();
 ```
+
+## 完整 API
+
+| 方法 | 说明 |
+|------|------|
+| `start(): Boolean` | 启动连接和音频。连接成功后立即可唤醒对话。 |
+| `stop()` | 断开连接，停止音频。可重新 `start()`。 |
+| `interrupt()` | 打断当前播放并取消服务端当前回合。 |
+| `updateLocation(park, spot?)` | 上报当前位置。服务端收到后自动播放到站内容（如有）。 |
+| `clearLocation()` | 清除位置上下文并重置对话历史。 |
+| `playWelcome(park, spot?)` | 请求服务端播放欢迎词。 |
+| `close()` | 永久释放实例。 |
+
+所有方法返回 `Boolean`：`true` 表示 SDK 接受调用，不代表服务端已确认。
+服务端结果通过事件回调返回。
+
+## 事件
+
+| 事件 | 说明 |
+|------|------|
+| `StateChanged(state)` | 状态变化：sleeping / listening / recognizing / generating / speaking / prompting |
+| `Transcript(role, text, final)` | 语音转文字（role=user）或回答文字（role=assistant） |
+| `LocationAck` | 服务端确认位置上报 |
+| `WelcomeAck` | 服务端确认欢迎词请求 |
+| `PlaybackFinished(playbackId, contentId)` | 音频物理播放完成 |
+| `PlaybackFailed(playbackId, contentId, code)` | 音频播放失败 |
+| `Error(error)` | 错误（含 code、recoverable、fallbackText） |
+
+回调统一在 Android 主线程触发。
 
 ## 设备鉴权
 
-宿主只配置一个不透明 token。SDK 只发送
-`Authorization: Bearer <token>`。token 必须为 1–4096 个非空白字符。服务端由 token
-解析自己的稳定设备身份，用它完成重连 fencing 和设备状态隔离。token 可以轮换，
-但不能把 token 本身当作业务设备 ID。
+只需配一个 token。SDK 在 WebSocket 握手时发送 `Authorization: Bearer <token>`。
+服务端根据 token 识别设备身份，客户端不需要发设备 ID。
 
-## 会话语义
+Token 要求：1–4096 个非空白字符。
 
-`SessionSnapshot` 是完整快照，不是 merge patch：
+## 唤醒词机制
 
-- `id` 在一次会话生命周期中保持不变。
-- `rev` 从 1 开始并严格递增；完全相同的请求可以安全重试。
-- `attributes` 支持 JSON 的 null、字符串、布尔值、有限数值、对象和数组。
-- SDK 会递归复制并冻结 `attributes`，调用方后续修改原集合不会改变待发送数据。
-- SDK 与服务端共同限制最多 16 KiB、512 个节点、4 层嵌套、每个对象或数组
-  128 项、单个字符串 2048 个 Unicode code point，并拒绝非法控制字符。
-- 只有匹配的 `SessionAck(action="start")` 到达后才开放该连接的录音和唤醒。
-- 断线后 SDK 先恢复最新期望快照，再恢复尚未确认的内容请求。
-- 服务端拒绝当前操作时，SDK 回滚到最后一次确认的快照。
-- `endSession` 立即停止采集和播放，并取消全部仍在等待的内容请求。每个被取消的
-  请求都会产生 `scope="sdk"`、`code="content_cancelled_session_end"` 的本地终态。
+SDK 内置 Sherpa-ONNX 端侧关键词检测（KWS），唤醒词由服务端下发，宿主无需配置。
 
-`startSession`、`updateSession`、`endSession` 和 `playContent` 返回 `true` 只表示
-SDK 接受了调用。最终结果以 `SessionAck`、`ContentAck` 或 `Error` 为准。
+1. **握手**：连接建立后 SDK 自动发送 `{"type":"hello","wake":true}`，告知服务端
+   客户端已启用端侧 KWS。
+2. **下发**：服务端返回 `{"type":"ready","wake_words":["布丁",...]}`，SDK 将词
+   表加载到 Sherpa KWS 引擎。
+3. **唤醒确认**：用户说出任一唤醒词 → SDK 检测命中后上报服务端 → 服务端通过
+   TTS 回复"在呢"并进入监听状态，等待用户提问。
+4. **交互模式**（由服务端 `.env` 配置，客户端无需感知）：
+   - `follow_up`：回答结束后继续监听，用户可连续追问，无需再次唤醒。
+   - `single_turn`：每轮回答播完后回到 `sleeping`，下一次提问必须重新唤醒。
+5. **播放期间唤醒**：播放期间 KWS 使用放大后的原始 MIC 副本（绕过 AEC3 抑制），
+   确保"停止""换一个"等打断指令不被回声消除吞掉。
 
-## 内容请求
+宿主 App 不需要管理唤醒词列表或 KWS 引擎——`start()` 之后一切自动就绪。
 
-`ContentRequest` 包含：
+## LLM 上下文行为
 
-- `id`：幂等请求 ID。
-- `key`：由服务端解释的内容键。
-- `session`：可选的精确 `SessionRef(id, rev)`。
-- `attributes`：服务端解释的扩展字段。
+服务端 LLM 的回答质量取决于当前位置上下文：
 
-SDK 不根据 `key` 或 `attributes` 推断规则。绑定请求必须引用当前期望会话快照；
-未绑定请求不受当前是否存在会话影响。未确认的请求会跨断线重发；相同 `id`
-只能对应完全相同的请求。
+| 状态 | 行为 |
+|------|------|
+| 已调用 `updateLocation(park, spot)` | LLM 自动携带该景点的知识库内容作为上下文，回答与当前站点相关 |
+| 未上报位置 / 调用 `clearLocation()` 后 | LLM 按通用知识回答，不包含特定景点信息 |
+| 切换到新位置（再次 `updateLocation`） | 上下文立即更新为新站点，旧对话历史清除 |
 
-`ContentAck` 表示服务端接受请求。物理播放结果分别通过
-`PlaybackFinished(playbackId, contentId)` 和
-`PlaybackFailed(playbackId, contentId, code)` 返回。普通语音回复的
-`contentId` 为 `null`。
+`clearLocation()` 同时清除位置和对话历史。游客下车或订单结束时应调用此方法。
 
-## 主动播报
+## 协议帧参考
 
-内容请求不依赖唤醒。宿主在任意时刻调用 `playContent` 都可以让设备主动开口，
-典型场景是到站播报。
+以下是一次完整交互的 wire-level JSON 帧序列。`←` 表示客户端发送，`→` 表示
+服务端返回。SDK 已将这些帧封装为上层 API，宿主通常不需要直接处理。
 
-`id` 和 `key` 是两件不同的事：
+```text
+// 连接建立
+← {"type":"hello","wake":true}
+→ {"type":"ready","connection_id":"c1","wake_words":["布丁"]}
 
-- `id` 是这一次请求的幂等句柄。服务端按 `id` 加完整报文做指纹：同 `id` 同内容
-  直接回 `ContentAck`，同 `id` 不同内容报 `content_id_reused`。断线重发依赖它，
-  所以必须由宿主提供一个可复现的值，SDK 不能替你生成。
-- `key` 选服务端注册了哪条内容策略。合法取值由服务端决定，SDK 不解释。
+// 位置上报 → 自动播到站介绍
+← {"type":"location.update","park":"nanyuan","spot":"北一门"}
+→ {"type":"location.ack"}
+→ （服务端自动播报该站点介绍音频）
 
-`attributes` 的字段名同样由服务端定义，SDK 只做结构校验后原样转发。下面的例子
-对应本项目服务端当前注册的两个 key，权威定义见服务端仓库的 `PROTOCOL.md`。
+// 到下一站
+← {"type":"location.update","park":"nanyuan","spot":"1907_station"}
+→ {"type":"location.ack"}
+→ （自动播报）
 
-### 到站播报：`arrival_prompt`
-
-这个 key **要求存在已确认的会话**，并且 `attributes.spot_id` 必须等于当前会话
-快照里的 `current_spot_id`；报文字段集必须精确匹配，不能多也不能少。
-
-```kotlin
-// 1. 上车时开启会话，用 current_spot_id 表示当前位置。
-client.startSession(
-    SessionSnapshot(
-        id = "order-001",
-        rev = 1,
-        attributes = mapOf("current_spot_id" to "boarding_point"),
-    ),
-)
-
-// 2. 到达小龙哥铁路桥时，先把会话推进到新位置。
-client.updateSession(
-    SessionSnapshot(
-        id = "order-001",
-        rev = 2,
-        attributes = mapOf("current_spot_id" to "xiaongge_bridge"),
-    ),
-)
-
-// 3. 绑定这个精确 revision 触发播报。
-client.playContent(
-    ContentRequest(
-        id = "arrival-order-001-rev-2",   // 幂等 ID，重试必须用同一个
-        key = "arrival_prompt",
-        session = SessionRef("order-001", 2),
-        attributes = mapOf("spot_id" to "xiaongge_bridge"),
-    ),
-)
+// 离开（清除位置 + 对话历史）
+← {"type":"location.clear"}
+→ {"type":"location.ack"}
 ```
 
-播报正文由服务端从已审核的内容库按 `spot_id` 取出，SDK 和宿主都不传文案。
-"我们到达小龙哥铁路桥了，需要讲解一下吗"这类措辞、以及末尾是否追问，全部在
-服务端，改播报内容不需要发新版 App。
+唤醒对话的帧序列：
 
-追问之后用户直接回答"好"或"不用"即可，无需唤醒词——但前提是会话已确认，因为
-麦克风上行要求 `SessionAck(action="start")` 已到达。答"好"时服务端会继续下发
-该位置的完整讲解。
+```text
+// 端侧 KWS 检测到唤醒词后 SDK 自动上报
+← （音频帧中包含唤醒词）
+→ {"type":"state","value":"listening"}
+→ （TTS 播报 "在呢"）
 
-`current_spot_id` 与 `spot_id` 由服务端做格式校验（小写字母、数字、下划线），
-中文站名不要放进这两个字段。
-
-### 无会话固定内容：`park_welcome`
-
-这个 key 相反，**要求当前没有活动会话**，否则报 `active_session_forbidden`。
-
-```kotlin
-client.playContent(ContentRequest("cruise-001", "park_welcome"))
+// 用户提问（持续上行 Opus 音频帧）
+→ {"type":"transcript","role":"user","text":"这里有什么好玩的","final":true}
+→ {"type":"transcript","role":"assistant","text":"...","final":true}
+→ （48 kHz Opus 音频流）
+→ {"type":"state","value":"sleeping"}
 ```
 
-### 关联播报结果
+## 使用场景
+
+### 导览车到站播报
 
 ```kotlin
-is FastVoiceEvent.ContentAck ->
-    if (event.id == pendingArrivalId) markArrivalAccepted()
+// 到北一门
+client.updateLocation("南苑森林湿地公园", "北一门")
+// → 服务端自动查知识库，播放北一门介绍
+// → 播完后游客可以唤醒提问："布丁，这里有什么好玩的？"
 
-is FastVoiceEvent.PlaybackFinished ->
-    if (event.contentId == pendingArrivalId) markArrivalAnnounced()
-
-is FastVoiceEvent.PlaybackFailed ->
-    if (event.contentId == pendingArrivalId) retryArrival(event.code)
+// 到下一站
+client.updateLocation("南苑森林湿地公园", "运河广场")
+// → 自动播运河广场介绍
 ```
 
-`ContentAck` 只表示服务端接受了请求，真正播完要等 `PlaybackFinished`。普通语音
-回复的 `contentId` 为 `null`，据此可以把主动播报和对话回复区分开。
+### 欢迎词
 
-`id` 和 `key` 必须匹配 `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`，不能包含中文，
-否则构造 `ContentRequest` 时就会抛 `IllegalArgumentException`。
+```kotlin
+// 游客上车时播欢迎词
+client.playWelcome("南苑森林湿地公园")
+```
+
+### 纯对话（不上报位置）
+
+```kotlin
+// 连上就能说话，不需要上报位置
+client.start()
+// 用户说唤醒词 → 提问 → 服务端回答
+// 没有位置上下文时，服务端按通用知识回答
+```
+
+### 结束
+
+```kotlin
+// 游客下车，清空上下文
+client.clearLocation()
+```
+
+## 断线重连
+
+SDK 自动重连。重连后：
+- 如果之前上报过位置，自动重发 `location.update`
+- 唤醒词立即恢复可用
+- 不需要宿主做任何操作
 
 ## 线程与安全
 
-- 回调统一在 Android 主线程触发。
-- 一个 `FastVoiceClient` 对应一个前台语音所有权。
-- `start()`、`stop()` 幂等，`close()` 永久关闭实例。
-- 端侧唤醒、断线自动重连和绕过系统代理都是固定行为，不可配置。
-- 正式环境使用 `wss://` 和短期设备令牌。
-- SDK 的日志、`toString()` 和事件不包含设备令牌。
+- 回调统一在 Android 主线程触发
+- 一个 `FastVoiceClient` 对应一个前台语音所有权
+- `start()`、`stop()` 幂等，`close()` 永久释放
+- 端侧唤醒、断线重连和绕过系统代理是固定行为
+- 正式环境使用 `wss://` 和短期设备令牌
 
 ## 固定音频协议
 
-- SDK 始终使用 `AUDIO_SOURCE_MIC`；不依赖设备的
-  `VOICE_COMMUNICATION` 或平台 `AcousticEchoCanceler`。
-- 麦克风上行：16 kHz、单声道、20 ms Opus。播放期间使用 C++ WebRTC M131
-  AEC3 处理后的 MIC，其他时间使用原始 MIC。
-- 服务端下行：48 kHz、单声道、20 ms Opus。
-- AudioTrack 实际接受的 48 kHz PCM 同步作为 AEC3 回声参考；处理核心固定按
-  WebRTC 原生 10 ms 子帧运行。
-- 播放期间端侧 KWS 使用放大后的原始 MIC 副本；上行 ASR 与 pre-roll 使用
-  AEC3 处理后的音频且不附加该增益，
-  控制词仍由服务端 ASR 复核后执行。
-- `playback.end` 只表示服务端不再发送帧；只有物理写入成功才会上报
-  `playback.finished`。
-- 解码、帧长或 AudioTrack 写入异常会上报 `playback.failed`，不会误报成功。
+- 上行：16 kHz 单声道 20 ms Opus（播放期间使用 WebRTC AEC3 处理后的音频）
+- 下行：48 kHz 单声道 20 ms Opus
+- 播放期间端侧 KWS 使用放大后的原始 MIC 副本
+- AudioTrack 48 kHz PCM 同步作为 AEC3 回声参考
 
-## 开发验证
+## USB 调试
+
+```bash
+adb reverse tcp:8100 tcp:8100
+```
+
+Demo 使用 `ws://127.0.0.1:8100/ws`。局域网直连时填 `ws://<服务器IP>:8100/ws`。
+
+## 构建验证
 
 ```bash
 ./fastvoice-sdk/build-webrtc-native.sh
@@ -303,4 +273,4 @@ is FastVoiceEvent.PlaybackFailed ->
   :sample:assembleDebug
 ```
 
-协议字段以服务端仓库的 `PROTOCOL.md` 为唯一标准。
+协议字段以服务端仓库 `PROTOCOL.md`（v0.7）为唯一标准。
