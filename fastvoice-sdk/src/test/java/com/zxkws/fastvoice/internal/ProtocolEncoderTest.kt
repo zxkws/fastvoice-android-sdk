@@ -1,8 +1,5 @@
 package com.zxkws.fastvoice.internal
 
-import com.zxkws.fastvoice.ContentRequest
-import com.zxkws.fastvoice.SessionRef
-import com.zxkws.fastvoice.SessionSnapshot
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -16,55 +13,24 @@ class ProtocolEncoderTest {
     }
 
     @Test
-    fun sessionSnapshotsAreCompleteTypedMessages() {
-        val snapshot = SessionSnapshot(
-            "s1",
-            2,
-            linkedMapOf("locale" to "zh-CN", "participant_count" to 3),
-        )
-
+    fun locationAndWelcomeMessagesUseExactShapes() {
         assertEquals(
-            "{\"type\":\"session.start\",\"id\":\"s1\",\"rev\":2," +
-                "\"attributes\":{\"locale\":\"zh-CN\",\"participant_count\":3}}",
-            ProtocolEncoder.sessionStart(snapshot),
+            "{\"type\":\"location.update\",\"park\":\"nanyuan\",\"spot\":\"station_1907\"}",
+            ProtocolEncoder.locationUpdate("nanyuan", "station_1907"),
         )
         assertEquals(
-            "{\"type\":\"session.update\",\"id\":\"s1\",\"rev\":2," +
-                "\"attributes\":{\"locale\":\"zh-CN\",\"participant_count\":3}}",
-            ProtocolEncoder.sessionUpdate(snapshot),
+            "{\"type\":\"location.update\",\"park\":\"nanyuan\"}",
+            ProtocolEncoder.locationUpdate("nanyuan", null),
         )
+        assertEquals("{\"type\":\"location.clear\"}", ProtocolEncoder.locationClear())
         assertEquals(
-            "{\"type\":\"session.end\",\"id\":\"s1\",\"rev\":3,\"reason\":\"completed\"}",
-            ProtocolEncoder.sessionEnd("s1", 3, "completed"),
+            "{\"type\":\"welcome.play\",\"park\":\"nanyuan\",\"spot\":\"north_gate\"}",
+            ProtocolEncoder.welcomePlay("nanyuan", "north_gate"),
         )
     }
 
     @Test
-    fun contentRequestsHaveExactBoundAndUnboundShapes() {
-        assertEquals(
-            "{\"type\":\"content.play\",\"id\":\"c1\",\"key\":\"welcome\"," +
-                "\"attributes\":{\"variant\":\"short\"},\"session_id\":\"s1\"," +
-                "\"session_rev\":2}",
-            ProtocolEncoder.contentPlay(
-                ContentRequest(
-                    "c1",
-                    "welcome",
-                    SessionRef("s1", 2),
-                    mapOf("variant" to "short"),
-                ),
-            ),
-        )
-        assertEquals(
-            "{\"type\":\"content.play\",\"id\":\"c2\",\"key\":\"idle_message\"," +
-                "\"attributes\":{}}",
-            ProtocolEncoder.contentPlay(
-                ContentRequest("c2", "idle_message", null, emptyMap()),
-            ),
-        )
-    }
-
-    @Test
-    fun playbackControlAndCandidateMessagesUseTheNewNames() {
+    fun playbackControlAndCandidateMessagesUseCurrentNames() {
         assertEquals(
             "{\"type\":\"wake\",\"word\":\"布丁\"}",
             ProtocolEncoder.wake("布丁"),

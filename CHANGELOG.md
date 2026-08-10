@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.11.2 — 2026-08-10
+
+- 修复 `0.11.x` 切换到 location/welcome API 后留下的过期 Sample 和单元测试，恢复
+  SDK、Sample、Maven Local 发布链路的完整构建。
+- 文档明确 Android 只连接 FastVoice，讯飞 ASR/TTS、MaxKB 和大模型密钥只存在
+  服务端；服务端替换 TTS 不改变 SDK API 或音频协议。
+- 补充 JitPack/AAR 引入、当前公开 API、位置恢复、原始事件展示和发布流程文档。
+- 修正版本号；先前 `0.11.0/0.11.1` 标签因 Gradle 版本仍为 `0.10.0`
+  而未生成 GitHub Release。
+
+## 0.11.1 — 2026-08-06
+
+- `location.ack` / `welcome.ack` 允许服务端不回传 park/spot，适配精简确认帧。
+
+## 0.11.0 — 2026-08-06
+
+- 公开 API 从 session/content 替换为 `updateLocation`、`clearLocation` 和
+  `playWelcome`。
+- 重连后自动恢复最后一次位置上下文。
+
 ## 0.10.0 — 2026-08-06
 
 破坏性变更：`FastVoiceConfig` 移除四个配置项，对应行为改为固定。已接入的宿主

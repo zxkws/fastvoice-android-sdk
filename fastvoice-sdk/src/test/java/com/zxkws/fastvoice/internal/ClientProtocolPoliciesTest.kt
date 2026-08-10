@@ -1,9 +1,5 @@
 package com.zxkws.fastvoice.internal
 
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -11,40 +7,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ClientProtocolPoliciesTest {
-    @Test
-    fun invalidationCannotSplitAValidatedCallbackFromItsMutation() {
-        val sessions = ClientSessionEpoch()
-        val token = sessions.begin()
-        val entered = CountDownLatch(1)
-        val release = CountDownLatch(1)
-        val invalidationStarted = CountDownLatch(1)
-        val executor = Executors.newFixedThreadPool(2)
-        try {
-            val effect = executor.submit<Boolean> {
-                sessions.runIfCurrent(token) {
-                    entered.countDown()
-                    assertTrue(release.await(2, TimeUnit.SECONDS))
-                }
-            }
-            assertTrue(entered.await(2, TimeUnit.SECONDS))
-            val invalidation = executor.submit {
-                invalidationStarted.countDown()
-                sessions.invalidate()
-            }
-            assertTrue(invalidationStarted.await(2, TimeUnit.SECONDS))
-            assertFalse(invalidation.isDone)
-            release.countDown()
-            assertTrue(effect.get(2, TimeUnit.SECONDS))
-            invalidation.get(2, TimeUnit.SECONDS)
-            val staleEffect = AtomicBoolean(false)
-            assertFalse(sessions.runIfCurrent(token) { staleEffect.set(true) })
-            assertFalse(staleEffect.get())
-        } finally {
-            release.countDown()
-            executor.shutdownNow()
-        }
-    }
-
     @Test
     fun localCandidateRejectAndTimeoutReleaseOnlyTheirOwnHold() {
         val state = LocalCommandPrePauseState()

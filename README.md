@@ -3,7 +3,9 @@
 FastVoice 是面向 Android 的实时语音 SDK。负责设备鉴权、WebSocket 连接、麦克风
 采集、Opus 编解码、端侧唤醒词、流式播放、打断和断线重连。
 
-SDK 不调用 Android `TextToSpeech`；所有可听语音都来自服务端。
+SDK 当前版本为 `0.11.2`。SDK 不调用 Android `TextToSpeech`；所有可听语音
+都来自服务端。ASR、TTS、MaxKB 和大模型均是服务端实现细节，Android 不保存
+上游密钥，也不需要因服务端替换语音供应商而改代码。
 
 ## 环境要求
 
@@ -27,6 +29,24 @@ dependencies {
     implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.25")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("io.github.jaredmdobson:concentus:1.0.2")
+}
+```
+
+也可以通过 JitPack 使用发布标签：
+
+```kotlin
+// settings.gradle.kts
+dependencyResolutionManagement {
+    repositories {
+        google()
+        mavenCentral()
+        maven("https://jitpack.io")
+    }
+}
+
+// app/build.gradle.kts
+dependencies {
+    implementation("com.github.zxkws:fastvoice-android-sdk:0.11.2")
 }
 ```
 
@@ -119,7 +139,7 @@ client.clearLocation();
 ## 设备鉴权
 
 只需配一个 token。SDK 在 WebSocket 握手时发送 `Authorization: Bearer <token>`。
-服务端根据 token 识别设备身份，客户端不需要发设备 ID。
+生产环境由 FastVoice 前置网关校验 token；SDK 不发送讯飞、MaxKB 或大模型密钥。
 
 Token 要求：1–4096 个非空白字符。
 
@@ -133,9 +153,8 @@ SDK 内置 Sherpa-ONNX 端侧关键词检测（KWS），唤醒词由服务端下
    表加载到 Sherpa KWS 引擎。
 3. **唤醒确认**：用户说出任一唤醒词 → SDK 检测命中后上报服务端 → 服务端通过
    TTS 回复"在呢"并进入监听状态，等待用户提问。
-4. **交互模式**（由服务端 `.env` 配置，客户端无需感知）：
-   - `follow_up`：回答结束后继续监听，用户可连续追问，无需再次唤醒。
-   - `single_turn`：每轮回答播完后回到 `sleeping`，下一次提问必须重新唤醒。
+4. **连续追问**：回答结束后，服务端在追问窗口内继续监听；窗口到期后回到
+   `sleeping`，下一次提问需要重新唤醒。时长由服务端配置，SDK 无需感知。
 5. **播放期间唤醒**：播放期间 KWS 使用放大后的原始 MIC 副本（绕过 AEC3 抑制），
    确保"停止""换一个"等打断指令不被回声消除吞掉。
 
@@ -273,4 +292,5 @@ Demo 使用 `ws://127.0.0.1:8100/ws`。局域网直连时填 `ws://<服务器IP>
   :sample:assembleDebug
 ```
 
-协议字段以服务端仓库 `PROTOCOL.md`（v0.7）为唯一标准。
+发布前还会用 `-PusePublishedSdk` 让 Sample 从 Maven Local 重新解析已发布坐标，
+确认不是只有 project dependency 能编译。

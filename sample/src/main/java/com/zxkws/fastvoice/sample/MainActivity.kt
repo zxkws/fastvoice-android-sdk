@@ -14,14 +14,11 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import com.zxkws.fastvoice.DeviceTokenProvider
-import com.zxkws.fastvoice.ContentRequest
 import com.zxkws.fastvoice.FastVoiceClient
 import com.zxkws.fastvoice.FastVoiceConfig
 import com.zxkws.fastvoice.FastVoiceEvent
 import com.zxkws.fastvoice.FastVoiceListener
 import com.zxkws.fastvoice.FastVoiceLogger
-import com.zxkws.fastvoice.SessionRef
-import com.zxkws.fastvoice.SessionSnapshot
 
 /**
  * SDK 的最小接入示例页面。
@@ -32,27 +29,26 @@ class MainActivity : Activity() {
 
     private companion object {
         const val RECORD_AUDIO_REQUEST = 1001
-        const val SAMPLE_SESSION_ID = "sample-session"
     }
 
     private lateinit var endpointInput: EditText
     private lateinit var tokenInput: EditText
-    private lateinit var attributeInput: EditText
-    private lateinit var contentKeyInput: EditText
+    private lateinit var parkInput: EditText
+    private lateinit var spotInput: EditText
 
     private lateinit var startButton: Button
     private lateinit var stopButton: Button
     private lateinit var interruptButton: Button
-    private lateinit var startSessionButton: Button
-    private lateinit var contentButton: Button
-    private lateinit var endSessionButton: Button
+    private lateinit var updateLocationButton: Button
+    private lateinit var welcomeButton: Button
+    private lateinit var clearLocationButton: Button
 
     private lateinit var stateValue: TextView
     private lateinit var asrValue: TextView
     private lateinit var replyValue: TextView
     private lateinit var errorValue: TextView
-    private lateinit var sessionResultValue: TextView
-    private lateinit var contentResultValue: TextView
+    private lateinit var locationResultValue: TextView
+    private lateinit var welcomeResultValue: TextView
     private lateinit var playbackResultValue: TextView
 
     private var voiceClient: FastVoiceClient? = null
@@ -68,10 +64,10 @@ class MainActivity : Activity() {
                 }
             }
             is FastVoiceEvent.Error -> renderError(event.error.toString())
-            is FastVoiceEvent.SessionAck ->
-                runOnUiThread { sessionResultValue.text = event.toString() }
-            is FastVoiceEvent.ContentAck ->
-                runOnUiThread { contentResultValue.text = event.toString() }
+            is FastVoiceEvent.LocationAck ->
+                runOnUiThread { locationResultValue.text = event.toString() }
+            is FastVoiceEvent.WelcomeAck ->
+                runOnUiThread { welcomeResultValue.text = event.toString() }
             is FastVoiceEvent.PlaybackFinished ->
                 runOnUiThread { playbackResultValue.text = event.toString() }
             is FastVoiceEvent.PlaybackFailed ->
@@ -90,9 +86,9 @@ class MainActivity : Activity() {
         startButton.setOnClickListener { startVoice() }
         stopButton.setOnClickListener { voiceClient?.stop() }
         interruptButton.setOnClickListener { voiceClient?.interrupt() }
-        startSessionButton.setOnClickListener { startSampleSession() }
-        contentButton.setOnClickListener { playSampleContent() }
-        endSessionButton.setOnClickListener { voiceClient?.endSession(SAMPLE_SESSION_ID, 2) }
+        updateLocationButton.setOnClickListener { updateSampleLocation() }
+        welcomeButton.setOnClickListener { playSampleWelcome() }
+        clearLocationButton.setOnClickListener { voiceClient?.clearLocation() }
     }
 
     private fun startVoice() {
@@ -128,35 +124,24 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun startSampleSession() {
-        val attribute = attributeInput.text.toString()
-        if (attribute.isBlank()) {
-            renderError("attribute value is required")
+    private fun updateSampleLocation() {
+        val park = parkInput.text.toString()
+        val spot = spotInput.text.toString().ifBlank { null }
+        if (park.isBlank()) {
+            renderError("park is required")
             return
         }
-        voiceClient?.startSession(
-            SessionSnapshot(
-                id = SAMPLE_SESSION_ID,
-                rev = 1,
-                attributes = mapOf("sample_value" to attribute),
-            ),
-        )
+        voiceClient?.updateLocation(park, spot)
     }
 
-    private fun playSampleContent() {
-        val key = contentKeyInput.text.toString().trim()
-        if (key.isBlank()) {
-            renderError("content key is required")
+    private fun playSampleWelcome() {
+        val park = parkInput.text.toString()
+        val spot = spotInput.text.toString().ifBlank { null }
+        if (park.isBlank()) {
+            renderError("park is required")
             return
         }
-        voiceClient?.playContent(
-            ContentRequest(
-                id = "sample-content",
-                key = key,
-                session = SessionRef(SAMPLE_SESSION_ID, 1),
-                attributes = emptyMap(),
-            ),
-        )
+        voiceClient?.playWelcome(park, spot)
     }
 
     private fun requestMicrophonePermissionIfNeeded() {
@@ -218,22 +203,22 @@ class MainActivity : Activity() {
         tokenInput = input("device token (test only)").apply {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
         }
-        attributeInput = input("sample attribute value")
-        contentKeyInput = input("content key")
+        parkInput = input("park").apply { setText("南苑森林湿地公园") }
+        spotInput = input("spot (optional)")
 
         startButton = button("Start")
         stopButton = button("Stop")
         interruptButton = button("Interrupt")
-        startSessionButton = button("Start session")
-        contentButton = button("Play content")
-        endSessionButton = button("End session")
+        updateLocationButton = button("Update location")
+        welcomeButton = button("Play welcome")
+        clearLocationButton = button("Clear location")
 
         stateValue = output()
         asrValue = output()
         replyValue = output()
         errorValue = output()
-        sessionResultValue = output()
-        contentResultValue = output()
+        locationResultValue = output()
+        welcomeResultValue = output()
         playbackResultValue = output()
 
         val content = LinearLayout(this).apply {
@@ -245,17 +230,17 @@ class MainActivity : Activity() {
             addView(label("Token"))
             addView(tokenInput)
             addView(buttonRow(startButton, stopButton, interruptButton))
-            addView(label("Session attribute"))
-            addView(attributeInput)
-            addView(label("Content key"))
-            addView(contentKeyInput)
-            addView(buttonRow(startSessionButton, contentButton, endSessionButton))
+            addView(label("Park"))
+            addView(parkInput)
+            addView(label("Spot"))
+            addView(spotInput)
+            addView(buttonRow(updateLocationButton, welcomeButton, clearLocationButton))
             addView(rawOutput("state", stateValue, gap))
             addView(rawOutput("asr", asrValue, gap))
             addView(rawOutput("reply", replyValue, gap))
             addView(rawOutput("error", errorValue, gap))
-            addView(rawOutput("sessionResult", sessionResultValue, gap))
-            addView(rawOutput("contentResult", contentResultValue, gap))
+            addView(rawOutput("locationResult", locationResultValue, gap))
+            addView(rawOutput("welcomeResult", welcomeResultValue, gap))
             addView(rawOutput("playbackResult", playbackResultValue, gap))
         }
 
