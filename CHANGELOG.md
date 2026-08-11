@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.1 — 2026-08-11
+
+- 新增初始化时配置的 `getLocation` 匿名函数。SDK 在连接就绪和唤醒时调用该函数，
+  自行解析经纬度 JSON 并上传；宿主无需手动更新坐标。
+- 定位方法返回 `null`、非法结果或抛出异常均不影响语音连接。
+
 ## 0.12.0 — 2026-08-11
 
 - 破坏性变更：删除 `DeviceTokenProvider`、`token()`、`tokenProvider()` 和 WebSocket

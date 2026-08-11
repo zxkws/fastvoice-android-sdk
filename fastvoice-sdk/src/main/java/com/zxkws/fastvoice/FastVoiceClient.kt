@@ -50,6 +50,7 @@ class FastVoiceClient @JvmOverloads constructor(
     private val ready = AtomicBoolean(false)
     private val reconnectAttempt = AtomicInteger(0)
     private val connectionEpoch = AtomicLong(0)
+    private val locationRequestEpoch = AtomicLong(0)
     private val socket = AtomicReference<WebSocket?>(null)
     private val wakeWords = AtomicReference<List<String>>(emptyList())
 
@@ -88,6 +89,7 @@ class FastVoiceClient @JvmOverloads constructor(
     private lateinit var audio: AudioEngine
     private val audioCallback = object : AudioEngine.Callback {
             override fun onWakeWord(word: String): Boolean {
+                requestHostLocation()
                 val current = socket.get()
                 val sent = ready.get() && current != null &&
                     current.send(ProtocolEncoder.wake(word))
@@ -191,6 +193,7 @@ class FastVoiceClient @JvmOverloads constructor(
     fun stop() {
         if (!started.compareAndSet(true, false)) return
         connectionEpoch.incrementAndGet()
+        locationRequestEpoch.incrementAndGet()
         ready.set(false)
         reconnectFuture?.cancel(false)
         reconnectFuture = null
@@ -251,6 +254,7 @@ class FastVoiceClient @JvmOverloads constructor(
         locationSpot = null
         locationLatitude = null
         locationLongitude = null
+        locationRequestEpoch.incrementAndGet()
         return sendIfReady(ProtocolEncoder.locationClear())
     }
 
@@ -396,6 +400,7 @@ class FastVoiceClient @JvmOverloads constructor(
         audio.setKwsSessionEnabled(true)
         audio.setWakeArmed(canArmWake())
         sendStoredLocation()
+        requestHostLocation()
     }
 
     private fun sendStoredLocation() {
@@ -411,6 +416,48 @@ class FastVoiceClient @JvmOverloads constructor(
                 longitude,
             ),
         )
+    }
+
+    private fun requestHostLocation() {
+        val getLocation = config.getLocation ?: return
+        if (!started.get() || closed.get()) return
+        val request = locationRequestEpoch.incrementAndGet()
+        mainHandler.post {
+            if (!started.get() || closed.get() || locationRequestEpoch.get() != request) {
+                return@post
+            }
+            val completed = AtomicBoolean(false)
+            try {
+                getLocation { json ->
+                    if (!completed.compareAndSet(false, true)) return@getLocation
+                    acceptHostLocation(request, json)
+                }
+            } catch (error: Exception) {
+                if (completed.compareAndSet(false, true)) {
+                    emitLocalError("location_provider_failed", error.message, error)
+                }
+            }
+        }
+    }
+
+    private fun acceptHostLocation(request: Long, json: JSONObject?) {
+        if (json == null || !started.get() || closed.get() ||
+            locationRequestEpoch.get() != request
+        ) {
+            return
+        }
+        val latitude = (json.opt("latitude") as? Number)?.toDouble()
+        val longitude = (json.opt("longitude") as? Number)?.toDouble()
+        if (latitude == null || longitude == null || !latitude.isFinite() ||
+            !longitude.isFinite() || latitude !in -90.0..90.0 ||
+            longitude !in -180.0..180.0
+        ) {
+            emitLocalError("location_provider_invalid_result")
+            return
+        }
+        locationLatitude = latitude
+        locationLongitude = longitude
+        sendIfReady(ProtocolEncoder.locationUpdate(null, null, latitude, longitude))
     }
 
     private fun handleState(message: JSONObject) {

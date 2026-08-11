@@ -1,6 +1,6 @@
 # FastVoice Android SDK 详细指南
 
-适用版本：`0.12.0`
+适用版本：`0.12.1`
 
 ## 1. 能力边界
 
@@ -33,7 +33,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.zxkws:fastvoice-android-sdk:0.12.0")
+    implementation("com.github.zxkws:fastvoice-android-sdk:0.12.1")
 }
 ```
 
@@ -69,6 +69,9 @@ val client = FastVoiceClient(
     applicationContext,
     FastVoiceConfig(
         endpoint = "wss://voice.example.com/ws",
+        getLocation = { callback ->
+            hostLocationService.getLocationAsync(callback)
+        },
     ),
 ) { event ->
     // 直接展示服务端原始值，不改写 transcript/code/ID。
@@ -90,7 +93,6 @@ client.start()
 | `start()` | 启动音频和 WebSocket |
 | `stop()` | 停止并允许后续重启 |
 | `interrupt()` | 立即停止本地播放并取消服务端当前回合 |
-| `updateCoordinates(latitude, longitude)` | 上报天气等位置服务使用的经纬度 |
 | `updateLocation(park, spot?)` | 更新位置；有 spot 时服务端可触发到站播报 |
 | `clearLocation()` | 清除位置与对话历史 |
 | `playWelcome(park, spot?)` | 请求欢迎词 |
@@ -122,19 +124,17 @@ client.clearLocation()
 SDK 内存中保留最后一次 park/spot，断线重连并收到 `ready` 后自动重发。
 `clearLocation()` 后不再恢复旧位置。
 
-SDK 不申请定位权限，也不依赖具体定位供应商。宿主异步定位完成后直接传两个参数：
+SDK 不申请定位权限，也不依赖具体定位供应商。初始化时提供宿主已有的方法：
 
 ```kotlin
-hostLocationService.getLocationAsync { json ->
-    client.updateCoordinates(
-        json.getDouble("latitude"),
-        json.getDouble("longitude"),
-    )
+getLocation = { callback ->
+    hostLocationService.getLocationAsync(callback)
 }
 ```
 
-纬度必须在 `-90..90`，经度必须在 `-180..180`。定位失败时不调用即可，不影响语音。
-SDK 在内存中缓存坐标，并在断线重连后自动恢复。
+匿名函数异步回调 `JSONObject` 或 `null`；对象只需包含数值型 `latitude` 和
+`longitude`。SDK 在连接就绪和每次唤醒时调用该方法，自行解析并上传，重连时先
+恢复缓存。宿主不需要在其他业务位置调用 SDK 的坐标方法。
 
 ## 7. 唤醒、打断与音频
 

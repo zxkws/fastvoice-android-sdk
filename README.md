@@ -3,7 +3,7 @@
 FastVoice 是面向 Android 的实时语音 SDK。负责 WebSocket 连接、麦克风
 采集、Opus 编解码、端侧唤醒词、流式播放、打断和断线重连。
 
-SDK 当前版本为 `0.12.0`。SDK 不调用 Android `TextToSpeech`；所有可听语音
+SDK 当前版本为 `0.12.1`。SDK 不调用 Android `TextToSpeech`；所有可听语音
 都来自服务端。ASR、TTS、MaxKB 和大模型均是服务端实现细节，Android 不保存
 上游密钥，也不需要因服务端替换语音供应商而改代码。
 
@@ -46,7 +46,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.zxkws:fastvoice-android-sdk:0.12.0")
+    implementation("com.github.zxkws:fastvoice-android-sdk:0.12.1")
 }
 ```
 
@@ -58,6 +58,9 @@ val client = FastVoiceClient(
     applicationContext,
     FastVoiceConfig(
         endpoint = "wss://voice.example.com/ws",
+        getLocation = { callback ->
+            hostLocationService.getLocationAsync(callback)
+        },
     ),
 ) { event ->
     when (event) {
@@ -73,14 +76,6 @@ val client = FastVoiceClient(
 
 // 2. 启动 — 连上就能唤醒说话
 client.start()
-
-// 宿主异步定位完成后，可选上报天气坐标
-hostLocationService.getLocationAsync { json ->
-    client.updateCoordinates(
-        json.getDouble("latitude"),
-        json.getDouble("longitude"),
-    )
-}
 
 // 3. 上报位置 — 服务端自动播到站介绍
 client.updateLocation(park = "南苑森林湿地公园", spot = "北一门")
@@ -99,6 +94,9 @@ client.clearLocation()
 
 ```java
 FastVoiceConfig config = FastVoiceConfig.builder("wss://voice.example.com/ws")
+    .getLocation(callback ->
+        hostLocationService.getLocationAsync(callback::invoke)
+    )
     .build();
 
 FastVoiceClient client = new FastVoiceClient(
@@ -108,9 +106,6 @@ FastVoiceClient client = new FastVoiceClient(
 );
 
 client.start();
-hostLocationService.getLocationAsync(json -> client.updateCoordinates(
-    json.optDouble("latitude"), json.optDouble("longitude")
-));
 client.updateLocation("南苑森林湿地公园", "北一门");
 client.playWelcome("南苑森林湿地公园", null);
 client.clearLocation();
@@ -123,7 +118,6 @@ client.clearLocation();
 | `start(): Boolean` | 启动连接和音频。连接成功后立即可唤醒对话。 |
 | `stop()` | 断开连接，停止音频。可重新 `start()`。 |
 | `interrupt()` | 打断当前播放并取消服务端当前回合。 |
-| `updateCoordinates(latitude, longitude)` | 上报天气等位置服务使用的经纬度。 |
 | `updateLocation(park, spot?)` | 上报当前位置。服务端收到后自动播放到站内容（如有）。 |
 | `clearLocation()` | 清除位置上下文并重置对话历史。 |
 | `playWelcome(park, spot?)` | 请求服务端播放欢迎词。 |
@@ -156,19 +150,17 @@ SDK 不接收 token，也不会在 WebSocket 握手中发送 `Authorization`。�
 ## 经纬度
 
 定位是可选能力。宿主继续负责定位权限及高德、百度、车载定位等实现，SDK 不申请
-定位权限。宿主的异步方法完成后，直接传入两个数值：
+定位权限。初始化时把宿主已有的异步方法交给 SDK 即可：
 
 ```kotlin
-hostLocationService.getLocationAsync { json ->
-    client.updateCoordinates(
-        json.getDouble("latitude"),
-        json.getDouble("longitude"),
-    )
+getLocation = { callback ->
+    hostLocationService.getLocationAsync(callback)
 }
 ```
 
-纬度范围为 `-90..90`，经度范围为 `-180..180`。定位失败时不调用即可，不影响
-语音连接。SDK 缓存最后一次坐标并在断线重连后自动恢复。
+匿名函数通过 callback 返回 `{"latitude":39.81,"longitude":116.37}` 或 `null`。SDK 在
+连接就绪和每次唤醒时自动调用、解析和上传，并在重连时先恢复缓存坐标；宿主无需
+手动调用 `updateCoordinates()`。非法坐标只产生可恢复错误，不影响语音连接。
 
 ## 唤醒词机制
 

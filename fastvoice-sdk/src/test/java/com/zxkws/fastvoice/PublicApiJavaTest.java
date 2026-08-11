@@ -10,10 +10,12 @@ public class PublicApiJavaTest {
     @Test
     public void locationApiAndSingleListenerAreUsableFromJava() throws Exception {
         FastVoiceConfig config = FastVoiceConfig.builder("ws://127.0.0.1:8100/ws")
+            .getLocation(callback -> callback.invoke(null))
             .preferredWakeWords(Arrays.asList("布丁", "你好布丁"))
             .build();
         FastVoiceListener listener = event -> assertNotNull(event);
 
+        assertNotNull(config.getGetLocation());
         assertEquals(
             boolean.class,
             FastVoiceClient.class.getMethod(

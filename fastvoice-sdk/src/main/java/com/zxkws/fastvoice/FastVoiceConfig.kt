@@ -1,6 +1,10 @@
 package com.zxkws.fastvoice
 
 import java.util.Collections
+import org.json.JSONObject
+
+/** Asynchronous location function supplied once by the host application. */
+typealias FastVoiceGetLocation = ((JSONObject?) -> Unit) -> Unit
 
 enum class FastVoiceLogLevel {
     DEBUG,
@@ -26,6 +30,7 @@ class FastVoiceConfig @JvmOverloads constructor(
     preferredWakeWords: List<String> = emptyList(),
     val routeAudioToSpeaker: Boolean = true,
     val logger: FastVoiceLogger? = null,
+    val getLocation: FastVoiceGetLocation? = null,
 ) {
     val preferredWakeWords: List<String> =
         Collections.unmodifiableList(ArrayList(preferredWakeWords))
@@ -46,6 +51,8 @@ class FastVoiceConfig @JvmOverloads constructor(
         append(routeAudioToSpeaker)
         append(", logger=")
         append(if (logger == null) "null" else "[configured]")
+        append(", getLocation=")
+        append(if (getLocation == null) "null" else "[configured]")
         append(')')
     }
 
@@ -53,6 +60,7 @@ class FastVoiceConfig @JvmOverloads constructor(
         private var preferredWakeWords: List<String> = emptyList()
         private var routeAudioToSpeaker: Boolean = true
         private var logger: FastVoiceLogger? = null
+        private var getLocation: FastVoiceGetLocation? = null
 
         fun preferredWakeWords(words: List<String>) = apply {
             preferredWakeWords = ArrayList(words)
@@ -62,11 +70,16 @@ class FastVoiceConfig @JvmOverloads constructor(
 
         fun logger(logger: FastVoiceLogger?) = apply { this.logger = logger }
 
+        fun getLocation(block: FastVoiceGetLocation?) = apply {
+            getLocation = block
+        }
+
         fun build(): FastVoiceConfig = FastVoiceConfig(
             endpoint = endpoint,
             preferredWakeWords = preferredWakeWords,
             routeAudioToSpeaker = routeAudioToSpeaker,
             logger = logger,
+            getLocation = getLocation,
         )
     }
 

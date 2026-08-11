@@ -13,7 +13,7 @@ class PublicModelsTest {
 
         assertEquals(
             "FastVoiceConfig(endpoint=[configured], preferredWakeWords=[], " +
-                "routeAudioToSpeaker=true, logger=null)",
+                "routeAudioToSpeaker=true, logger=null, getLocation=null)",
             config.toString(),
         )
     }

@@ -18,6 +18,7 @@ import com.zxkws.fastvoice.FastVoiceConfig
 import com.zxkws.fastvoice.FastVoiceEvent
 import com.zxkws.fastvoice.FastVoiceListener
 import com.zxkws.fastvoice.FastVoiceLogger
+import org.json.JSONObject
 
 /**
  * SDK 的最小接入示例页面。
@@ -106,6 +107,7 @@ class MainActivity : Activity() {
         try {
             val config = FastVoiceConfig(
                 endpoint = endpoint,
+                getLocation = { callback -> getSampleLocationAsync(callback) },
                 logger = FastVoiceLogger { level, message, error ->
                     Log.d("FastVoiceSample", "$level $message", error)
                 },
@@ -126,11 +128,16 @@ class MainActivity : Activity() {
             return
         }
         voiceClient?.updateLocation(park, spot)
+    }
+
+    private fun getSampleLocationAsync(callback: (JSONObject?) -> Unit) {
         val latitude = latitudeInput.text.toString().toDoubleOrNull()
         val longitude = longitudeInput.text.toString().toDoubleOrNull()
-        if (latitude != null && longitude != null) {
-            voiceClient?.updateCoordinates(latitude, longitude)
-        }
+        callback(
+            if (latitude == null || longitude == null) null else JSONObject()
+                .put("latitude", latitude)
+                .put("longitude", longitude),
+        )
     }
 
     private fun playSampleWelcome() {
