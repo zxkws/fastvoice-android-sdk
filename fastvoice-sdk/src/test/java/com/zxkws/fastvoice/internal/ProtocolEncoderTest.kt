@@ -22,6 +22,10 @@ class ProtocolEncoderTest {
             "{\"type\":\"location.update\",\"park\":\"nanyuan\"}",
             ProtocolEncoder.locationUpdate("nanyuan", null),
         )
+        assertEquals(
+            "{\"type\":\"location.update\",\"latitude\":39.81,\"longitude\":116.37}",
+            ProtocolEncoder.locationUpdate(null, null, 39.81, 116.37),
+        )
         assertEquals("{\"type\":\"location.clear\"}", ProtocolEncoder.locationClear())
         assertEquals(
             "{\"type\":\"welcome.play\",\"park\":\"nanyuan\",\"spot\":\"north_gate\"}",

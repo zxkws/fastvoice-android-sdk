@@ -13,7 +13,6 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import com.zxkws.fastvoice.DeviceTokenProvider
 import com.zxkws.fastvoice.FastVoiceClient
 import com.zxkws.fastvoice.FastVoiceConfig
 import com.zxkws.fastvoice.FastVoiceEvent
@@ -23,7 +22,7 @@ import com.zxkws.fastvoice.FastVoiceLogger
 /**
  * SDK 的最小接入示例页面。
  *
- * 输入框只用于本机联调。生产 App 应从自己的安全设备凭证和定位模块提供这些值。
+ * 输入框只用于本机联调。生产 App 应从自己的异步定位模块提供经纬度 JSON。
  */
 class MainActivity : Activity() {
 
@@ -32,9 +31,10 @@ class MainActivity : Activity() {
     }
 
     private lateinit var endpointInput: EditText
-    private lateinit var tokenInput: EditText
     private lateinit var parkInput: EditText
     private lateinit var spotInput: EditText
+    private lateinit var latitudeInput: EditText
+    private lateinit var longitudeInput: EditText
 
     private lateinit var startButton: Button
     private lateinit var stopButton: Button
@@ -98,20 +98,14 @@ class MainActivity : Activity() {
         }
 
         val endpoint = endpointInput.text.toString().trim()
-        val token = tokenInput.text.toString()
         if (endpoint.isBlank()) {
             renderError("endpoint is required")
-            return
-        }
-        if (token.isBlank()) {
-            renderError("token is required")
             return
         }
 
         try {
             val config = FastVoiceConfig(
                 endpoint = endpoint,
-                tokenProvider = DeviceTokenProvider.fixed(token),
                 logger = FastVoiceLogger { level, message, error ->
                     Log.d("FastVoiceSample", "$level $message", error)
                 },
@@ -132,6 +126,11 @@ class MainActivity : Activity() {
             return
         }
         voiceClient?.updateLocation(park, spot)
+        val latitude = latitudeInput.text.toString().toDoubleOrNull()
+        val longitude = longitudeInput.text.toString().toDoubleOrNull()
+        if (latitude != null && longitude != null) {
+            voiceClient?.updateCoordinates(latitude, longitude)
+        }
     }
 
     private fun playSampleWelcome() {
@@ -200,11 +199,18 @@ class MainActivity : Activity() {
             setText("ws://127.0.0.1:8100/ws")
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
         }
-        tokenInput = input("device token (test only)").apply {
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-        }
         parkInput = input("park").apply { setText("南苑森林湿地公园") }
         spotInput = input("spot (optional)")
+        latitudeInput = input("latitude").apply {
+            setText("39.81")
+            inputType = InputType.TYPE_CLASS_NUMBER or
+                InputType.TYPE_NUMBER_FLAG_DECIMAL or InputType.TYPE_NUMBER_FLAG_SIGNED
+        }
+        longitudeInput = input("longitude").apply {
+            setText("116.37")
+            inputType = InputType.TYPE_CLASS_NUMBER or
+                InputType.TYPE_NUMBER_FLAG_DECIMAL or InputType.TYPE_NUMBER_FLAG_SIGNED
+        }
 
         startButton = button("Start")
         stopButton = button("Stop")
@@ -227,9 +233,10 @@ class MainActivity : Activity() {
             addView(title("FastVoice SDK sample"))
             addView(label("Endpoint"))
             addView(endpointInput)
-            addView(label("Token"))
-            addView(tokenInput)
             addView(buttonRow(startButton, stopButton, interruptButton))
+            addView(label("Latitude / Longitude"))
+            addView(latitudeInput)
+            addView(longitudeInput)
             addView(label("Park"))
             addView(parkInput)
             addView(label("Spot"))

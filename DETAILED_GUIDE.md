@@ -1,6 +1,6 @@
 # FastVoice Android SDK 详细指南
 
-适用版本：`0.11.2`
+适用版本：`0.12.0`
 
 ## 1. 能力边界
 
@@ -33,7 +33,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.zxkws:fastvoice-android-sdk:0.11.2")
+    implementation("com.github.zxkws:fastvoice-android-sdk:0.12.0")
 }
 ```
 
@@ -69,7 +69,6 @@ val client = FastVoiceClient(
     applicationContext,
     FastVoiceConfig(
         endpoint = "wss://voice.example.com/ws",
-        tokenProvider = DeviceTokenProvider { loadShortLivedDeviceToken() },
     ),
 ) { event ->
     // 直接展示服务端原始值，不改写 transcript/code/ID。
@@ -79,8 +78,8 @@ val client = FastVoiceClient(
 client.start()
 ```
 
-`FastVoiceConfig` 只需要 FastVoice endpoint 和设备 token。token 会在 WebSocket 握手中
-作为 `Authorization: Bearer ...` 发送给 FastVoice/前置网关。
+`FastVoiceConfig` 只需要 FastVoice endpoint。SDK 不接收 token，也不发送
+`Authorization`，公网访问控制由前置网关完成。
 
 `start()` 和 `stop()` 幂等；`close()` 永久释放实例，之后不能再 `start()`。
 
@@ -91,6 +90,7 @@ client.start()
 | `start()` | 启动音频和 WebSocket |
 | `stop()` | 停止并允许后续重启 |
 | `interrupt()` | 立即停止本地播放并取消服务端当前回合 |
+| `updateCoordinates(latitude, longitude)` | 上报天气等位置服务使用的经纬度 |
 | `updateLocation(park, spot?)` | 更新位置；有 spot 时服务端可触发到站播报 |
 | `clearLocation()` | 清除位置与对话历史 |
 | `playWelcome(park, spot?)` | 请求欢迎词 |
@@ -121,6 +121,20 @@ client.clearLocation()
 
 SDK 内存中保留最后一次 park/spot，断线重连并收到 `ready` 后自动重发。
 `clearLocation()` 后不再恢复旧位置。
+
+SDK 不申请定位权限，也不依赖具体定位供应商。宿主异步定位完成后直接传两个参数：
+
+```kotlin
+hostLocationService.getLocationAsync { json ->
+    client.updateCoordinates(
+        json.getDouble("latitude"),
+        json.getDouble("longitude"),
+    )
+}
+```
+
+纬度必须在 `-90..90`，经度必须在 `-180..180`。定位失败时不调用即可，不影响语音。
+SDK 在内存中缓存坐标，并在断线重连后自动恢复。
 
 ## 7. 唤醒、打断与音频
 

@@ -1,65 +1,21 @@
 package com.zxkws.fastvoice
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PublicModelsTest {
-    private fun tokenProvider() = DeviceTokenProvider.fixed("never-print-this-token")
-
     @Test
-    fun tokenProviderAndConfigRedactSecretsFromDebugRepresentations() {
-        val token = "never-print-this-token"
-        val provider = DeviceTokenProvider.fixed(token)
+    fun configNeedsOnlyEndpointAndRedactsItsQuery() {
         val config = FastVoiceConfig(
-            endpoint = "wss://voice.example/ws?access_token=$token",
-            tokenProvider = provider,
+            endpoint = "wss://voice.example/ws?private=value",
         )
 
-        assertFalse(provider.toString().contains(token))
-        assertFalse(config.toString().contains(token))
-        assertFalse(config.toString().contains("access_token"))
-        assertTrue(provider.toString().contains("[redacted]"))
-    }
-
-    @Test
-    fun tokenAuthenticationIsMandatory() {
-        assertThrows(IllegalArgumentException::class.java) {
-            FastVoiceConfig.builder("wss://voice.example/ws").build()
-        }
-    }
-
-    @Test
-    fun rotatingTokenProviderHasNoDeviceIdArgument() {
-        var calls = 0
-        val config = FastVoiceConfig(
-            endpoint = "wss://voice.example/ws",
-            tokenProvider = DeviceTokenProvider {
-                calls += 1
-                "rotated-token"
-            },
+        assertEquals(
+            "FastVoiceConfig(endpoint=[configured], preferredWakeWords=[], " +
+                "routeAudioToSpeaker=true, logger=null)",
+            config.toString(),
         )
-
-        assertEquals("rotated-token", config.requireDeviceToken())
-        assertEquals(1, calls)
-    }
-
-    @Test
-    fun tokensRejectWhitespaceAndExcessiveLength() {
-        for (token in listOf("has space", "line\nbreak", "x".repeat(4_097))) {
-            assertThrows(IllegalArgumentException::class.java) {
-                DeviceTokenProvider.fixed(token)
-            }
-            val config = FastVoiceConfig(
-                endpoint = "wss://voice.example/ws",
-                tokenProvider = DeviceTokenProvider { token },
-            )
-            assertThrows(IllegalArgumentException::class.java) {
-                config.requireDeviceToken()
-            }
-        }
     }
 
     @Test
@@ -67,13 +23,11 @@ class PublicModelsTest {
         assertThrows(IllegalArgumentException::class.java) {
             FastVoiceConfig(
                 endpoint = "http://127.0.0.1:8100/ws",
-                tokenProvider = tokenProvider(),
             )
         }
 
         val config = FastVoiceConfig(
             endpoint = "ws://127.0.0.1:8100/ws",
-            tokenProvider = tokenProvider(),
         )
         assertEquals("ws://127.0.0.1:8100/ws", config.endpoint)
     }

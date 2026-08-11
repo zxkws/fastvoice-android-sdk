@@ -11,12 +11,19 @@ internal object ProtocolEncoder {
     )
 
     @JvmSynthetic
-    fun locationUpdate(park: String, spot: String?): String = JsonEncoder.encode(
+    fun locationUpdate(
+        park: String?,
+        spot: String?,
+        latitude: Double? = null,
+        longitude: Double? = null,
+    ): String = JsonEncoder.encode(
         linkedMapOf<String, Any?>(
             "type" to "location.update",
-            "park" to park,
         ).apply {
+            if (park != null) put("park", park)
             if (spot != null) put("spot", spot)
+            if (latitude != null) put("latitude", latitude)
+            if (longitude != null) put("longitude", longitude)
         },
     )
 

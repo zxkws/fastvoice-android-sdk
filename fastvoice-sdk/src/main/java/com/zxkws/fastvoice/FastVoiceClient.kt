@@ -69,6 +69,8 @@ class FastVoiceClient @JvmOverloads constructor(
 
     @Volatile private var locationPark: String? = null
     @Volatile private var locationSpot: String? = null
+    @Volatile private var locationLatitude: Double? = null
+    @Volatile private var locationLongitude: Double? = null
     private var playbackContentId: String? = null
 
     private val scheduler = Executors.newSingleThreadScheduledExecutor { runnable ->
@@ -217,7 +219,29 @@ class FastVoiceClient @JvmOverloads constructor(
         if (!started.get()) return false
         locationPark = park
         locationSpot = spot
-        return sendIfReady(ProtocolEncoder.locationUpdate(park, spot))
+        return sendIfReady(
+            ProtocolEncoder.locationUpdate(
+                park,
+                spot,
+                locationLatitude,
+                locationLongitude,
+            ),
+        )
+    }
+
+    /** Updates the coordinates used by server-side location services such as weather. */
+    fun updateCoordinates(latitude: Double, longitude: Double): Boolean {
+        check(!closed.get()) { "FastVoiceClient is closed" }
+        require(latitude.isFinite() && latitude in -90.0..90.0) {
+            "latitude must be finite and within -90..90"
+        }
+        require(longitude.isFinite() && longitude in -180.0..180.0) {
+            "longitude must be finite and within -180..180"
+        }
+        if (!started.get()) return false
+        locationLatitude = latitude
+        locationLongitude = longitude
+        return sendIfReady(ProtocolEncoder.locationUpdate(null, null, latitude, longitude))
     }
 
     fun clearLocation(): Boolean {
@@ -225,6 +249,8 @@ class FastVoiceClient @JvmOverloads constructor(
         if (!started.get()) return false
         locationPark = null
         locationSpot = null
+        locationLatitude = null
+        locationLongitude = null
         return sendIfReady(ProtocolEncoder.locationClear())
     }
 
@@ -248,7 +274,6 @@ class FastVoiceClient @JvmOverloads constructor(
         val request = runCatching {
             Request.Builder()
                 .url(config.endpoint)
-                .header("Authorization", "Bearer ${config.requireDeviceToken()}")
                 .build()
         }.getOrElse { error ->
             emitLocalError("connection_configuration_invalid", error.message, error)
@@ -370,9 +395,22 @@ class FastVoiceClient @JvmOverloads constructor(
         reconnectAttempt.set(0)
         audio.setKwsSessionEnabled(true)
         audio.setWakeArmed(canArmWake())
-        locationPark?.let { park ->
-            sendIfReady(ProtocolEncoder.locationUpdate(park, locationSpot))
-        }
+        sendStoredLocation()
+    }
+
+    private fun sendStoredLocation() {
+        val park = locationPark
+        val latitude = locationLatitude
+        val longitude = locationLongitude
+        if (park == null && (latitude == null || longitude == null)) return
+        sendIfReady(
+            ProtocolEncoder.locationUpdate(
+                park,
+                locationSpot,
+                latitude,
+                longitude,
+            ),
+        )
     }
 
     private fun handleState(message: JSONObject) {

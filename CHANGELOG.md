@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.12.0 — 2026-08-11
+
+- 破坏性变更：删除 `DeviceTokenProvider`、`token()`、`tokenProvider()` 和 WebSocket
+  `Authorization` 请求头；SDK 只连接由部署方网关保护的 endpoint。
+- 新增 `updateCoordinates(latitude, longitude)`。宿主异步定位完成后直接传两个数值，
+  SDK 在重连时恢复缓存坐标；定位失败时无需调用。
+- `location.update` 支持独立坐标更新，不会因坐标刷新重复触发到站播报。
+
 ## 0.11.2 — 2026-08-10
 
 - 修复 `0.11.x` 切换到 location/welcome API 后留下的过期 Sample 和单元测试，恢复
