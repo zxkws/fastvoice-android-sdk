@@ -6,6 +6,20 @@ import org.junit.Test
 
 class PublicModelsTest {
     @Test
+    fun endpointDefaultsToBuiltInWsServer() {
+        assertEquals(DEFAULT_FASTVOICE_ENDPOINT, FastVoiceConfig().endpoint)
+        assertEquals(DEFAULT_FASTVOICE_ENDPOINT, FastVoiceConfig(endpoint = "  ").endpoint)
+        assertEquals(DEFAULT_FASTVOICE_ENDPOINT, FastVoiceConfig.resolveEndpoint(null))
+        assertEquals(DEFAULT_FASTVOICE_ENDPOINT, FastVoiceConfig.builder().build().endpoint)
+    }
+
+    @Test
+    fun customEndpointOverridesDefaultAndIsTrimmed() {
+        val config = FastVoiceConfig(endpoint = "  ws://10.0.0.8:8100/ws  ")
+        assertEquals("ws://10.0.0.8:8100/ws", config.endpoint)
+    }
+
+    @Test
     fun configNeedsOnlyEndpointAndRedactsItsQuery() {
         val config = FastVoiceConfig(
             endpoint = "wss://voice.example/ws?private=value",

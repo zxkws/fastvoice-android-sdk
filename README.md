@@ -3,7 +3,7 @@
 FastVoice 是面向 Android 的实时语音 SDK。负责 WebSocket 连接、麦克风
 采集、Opus 编解码、端侧唤醒词、流式播放、打断和断线重连。
 
-SDK 当前版本为 `0.12.1`。SDK 不调用 Android `TextToSpeech`；所有可听语音
+SDK 当前版本为 `0.12.2`。SDK 不调用 Android `TextToSpeech`；所有可听语音
 都来自服务端。ASR、TTS、MaxKB 和大模型均是服务端实现细节，Android 不保存
 上游密钥，也不需要因服务端替换语音供应商而改代码。
 
@@ -46,18 +46,19 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.zxkws:fastvoice-android-sdk:0.12.1")
+    implementation("com.github.zxkws:fastvoice-android-sdk:0.12.2")
 }
 ```
 
 ## 快速集成（Kotlin）
 
 ```kotlin
-// 1. 创建客户端，只需要 endpoint
+// 1. 用户未填写地址时，SDK 使用 ws://192.168.105.165:8100/ws
+val customEndpoint = savedEndpointOrUserInput
 val client = FastVoiceClient(
     applicationContext,
     FastVoiceConfig(
-        endpoint = "wss://voice.example.com/ws",
+        endpoint = customEndpoint.orEmpty(),
         getLocation = { callback ->
             hostLocationService.getLocationAsync(callback)
         },
@@ -93,7 +94,8 @@ client.clearLocation()
 ## 快速集成（Java）
 
 ```java
-FastVoiceConfig config = FastVoiceConfig.builder("wss://voice.example.com/ws")
+// 不传 endpoint 时使用内置 ws://192.168.105.165:8100/ws
+FastVoiceConfig config = FastVoiceConfig.builder()
     .getLocation(callback ->
         hostLocationService.getLocationAsync(callback::invoke)
     )
@@ -110,6 +112,25 @@ client.updateLocation("南苑森林湿地公园", "北一门");
 client.playWelcome("南苑森林湿地公园", null);
 client.clearLocation();
 ```
+
+## 服务地址
+
+`FastVoiceConfig` 支持内置地址和用户输入覆盖：
+
+```kotlin
+val config = FastVoiceConfig(endpoint = userInput.orEmpty())
+```
+
+- 未传 endpoint、传入 `null` 后先调用 `resolveEndpoint()`，或传入空白字符串：使用
+  `FastVoiceConfig.DEFAULT_ENDPOINT`，当前值是 `ws://192.168.105.165:8100/ws`。
+- 非空输入：去除首尾空格后原样使用，并且必须以 `ws://` 或 `wss://` 开头。
+- 用户明确填写的地址连接失败时不会偷偷切回默认地址。
+- 宿主可自行用 SharedPreferences 或 DataStore 保存输入；Sample 已包含输入、保存和
+  “恢复默认”完整示例。
+
+当前 SDK Manifest 默认允许局域网 `ws://` 明文连接。如果宿主 Manifest 明确设置了
+`android:usesCleartextTraffic="false"`，需要改为 `true`；以后切换到 `wss://` 后可以
+再关闭明文流量。
 
 ## 完整 API
 
@@ -282,7 +303,7 @@ SDK 自动重连。重连后：
 - 一个 `FastVoiceClient` 对应一个前台语音所有权
 - `start()`、`stop()` 幂等，`close()` 永久释放
 - 端侧唤醒、断线重连和绕过系统代理是固定行为
-- 正式环境使用 `wss://` 和短期设备令牌
+- 当前内网部署使用 `ws://`；以后具备证书和域名后再切换 `wss://`
 
 ## 固定音频协议
 
@@ -297,7 +318,8 @@ SDK 自动重连。重连后：
 adb reverse tcp:8100 tcp:8100
 ```
 
-Demo 使用 `ws://127.0.0.1:8100/ws`。局域网直连时填 `ws://<服务器IP>:8100/ws`。
+Demo 输入为空时使用 `ws://192.168.105.165:8100/ws`。也可以输入其他局域网
+`ws://<服务器IP>:8100/ws`，启动时会保存，点击 “Restore default” 恢复内置地址。
 
 ## 构建验证
 

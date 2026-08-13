@@ -29,6 +29,8 @@ class MainActivity : Activity() {
 
     private companion object {
         const val RECORD_AUDIO_REQUEST = 1001
+        const val SETTINGS_NAME = "fastvoice_sample"
+        const val ENDPOINT_KEY = "endpoint"
     }
 
     private lateinit var endpointInput: EditText
@@ -39,6 +41,7 @@ class MainActivity : Activity() {
 
     private lateinit var startButton: Button
     private lateinit var stopButton: Button
+    private lateinit var restoreEndpointButton: Button
     private lateinit var interruptButton: Button
     private lateinit var updateLocationButton: Button
     private lateinit var welcomeButton: Button
@@ -86,6 +89,7 @@ class MainActivity : Activity() {
     private fun bindSdk() {
         startButton.setOnClickListener { startVoice() }
         stopButton.setOnClickListener { voiceClient?.stop() }
+        restoreEndpointButton.setOnClickListener { restoreDefaultEndpoint() }
         interruptButton.setOnClickListener { voiceClient?.interrupt() }
         updateLocationButton.setOnClickListener { updateSampleLocation() }
         welcomeButton.setOnClickListener { playSampleWelcome() }
@@ -98,15 +102,11 @@ class MainActivity : Activity() {
             return
         }
 
-        val endpoint = endpointInput.text.toString().trim()
-        if (endpoint.isBlank()) {
-            renderError("endpoint is required")
-            return
-        }
+        val customEndpoint = endpointInput.text.toString()
 
         try {
             val config = FastVoiceConfig(
-                endpoint = endpoint,
+                endpoint = customEndpoint,
                 getLocation = { callback -> getSampleLocationAsync(callback) },
                 logger = FastVoiceLogger { level, message, error ->
                     Log.d("FastVoiceSample", "$level $message", error)
@@ -114,10 +114,20 @@ class MainActivity : Activity() {
             )
             voiceClient?.close()
             voiceClient = FastVoiceClient(applicationContext, config, voiceListener)
+            getSharedPreferences(SETTINGS_NAME, MODE_PRIVATE).edit().apply {
+                if (customEndpoint.isBlank()) remove(ENDPOINT_KEY)
+                else putString(ENDPOINT_KEY, config.endpoint)
+            }.apply()
             voiceClient?.start()
         } catch (error: Exception) {
             renderError(error.message.orEmpty())
         }
+    }
+
+    private fun restoreDefaultEndpoint() {
+        getSharedPreferences(SETTINGS_NAME, MODE_PRIVATE).edit().remove(ENDPOINT_KEY).apply()
+        endpointInput.setText("")
+        endpointInput.hint = FastVoiceConfig.DEFAULT_ENDPOINT
     }
 
     private fun updateSampleLocation() {
@@ -202,8 +212,8 @@ class MainActivity : Activity() {
         val pad = (16 * density).toInt()
         val gap = (8 * density).toInt()
 
-        endpointInput = input("wss://your-server.example/ws").apply {
-            setText("ws://127.0.0.1:8100/ws")
+        endpointInput = input(FastVoiceConfig.DEFAULT_ENDPOINT).apply {
+            setText(getSharedPreferences(SETTINGS_NAME, MODE_PRIVATE).getString(ENDPOINT_KEY, ""))
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
         }
         parkInput = input("park").apply { setText("南苑森林湿地公园") }
@@ -221,6 +231,7 @@ class MainActivity : Activity() {
 
         startButton = button("Start")
         stopButton = button("Stop")
+        restoreEndpointButton = button("Restore default")
         interruptButton = button("Interrupt")
         updateLocationButton = button("Update location")
         welcomeButton = button("Play welcome")
@@ -240,6 +251,7 @@ class MainActivity : Activity() {
             addView(title("FastVoice SDK sample"))
             addView(label("Endpoint"))
             addView(endpointInput)
+            addView(restoreEndpointButton)
             addView(buttonRow(startButton, stopButton, interruptButton))
             addView(label("Latitude / Longitude"))
             addView(latitudeInput)

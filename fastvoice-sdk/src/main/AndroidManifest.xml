@@ -2,4 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- Current FastVoice deployments use ws:// on the private network. A host app may
+         override this with usesCleartextTraffic="false" after moving to wss://. -->
+    <application android:usesCleartextTraffic="true" />
 </manifest>

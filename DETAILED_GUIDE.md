@@ -1,6 +1,6 @@
 # FastVoice Android SDK 详细指南
 
-适用版本：`0.12.1`
+适用版本：`0.12.2`
 
 ## 1. 能力边界
 
@@ -33,7 +33,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.zxkws:fastvoice-android-sdk:0.12.1")
+    implementation("com.github.zxkws:fastvoice-android-sdk:0.12.2")
 }
 ```
 
@@ -60,6 +60,8 @@ dependencies {
 <uses-permission android:name="android.permission.RECORD_AUDIO" />
 ```
 
+SDK 已声明网络和录音权限，并默认允许当前内网部署使用的 `ws://` 明文连接。宿主
+Manifest 如果明确设置了 `android:usesCleartextTraffic="false"`，需改为 `true`。
 要求 Android API 23+，支持 `arm64-v8a` 和 `armeabi-v7a`。
 
 ## 3. 创建客户端
@@ -68,7 +70,8 @@ dependencies {
 val client = FastVoiceClient(
     applicationContext,
     FastVoiceConfig(
-        endpoint = "wss://voice.example.com/ws",
+        // 用户输入为空时自动使用内置 ws://192.168.105.165:8100/ws
+        endpoint = savedEndpointOrUserInput.orEmpty(),
         getLocation = { callback ->
             hostLocationService.getLocationAsync(callback)
         },
@@ -81,7 +84,9 @@ val client = FastVoiceClient(
 client.start()
 ```
 
-`FastVoiceConfig` 只需要 FastVoice endpoint。SDK 不接收 token，也不发送
+`FastVoiceConfig` 可以不传 endpoint，此时使用 `FastVoiceConfig.DEFAULT_ENDPOINT`。
+也可以传入用户输入的 `ws://` 或 `wss://` 地址覆盖；空白输入仍使用默认值。SDK
+不接收 token，也不发送
 `Authorization`，公网访问控制由前置网关完成。
 
 `start()` 和 `stop()` 幂等；`close()` 永久释放实例，之后不能再 `start()`。
