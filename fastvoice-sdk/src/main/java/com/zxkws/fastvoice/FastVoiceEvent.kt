@@ -37,9 +37,9 @@ sealed class FastVoiceEvent {
 
     data class Error(val error: FastVoiceError) : FastVoiceEvent()
 
-    data class LocationAck(val park: String, val spot: String?) : FastVoiceEvent()
+    data class LocationAck(val stationName: String?) : FastVoiceEvent()
 
-    data class WelcomeAck(val park: String, val spot: String?) : FastVoiceEvent()
+    data class WelcomeAck(val stationName: String?) : FastVoiceEvent()
 
     data class PlaybackFinished(
         val playbackId: Int,

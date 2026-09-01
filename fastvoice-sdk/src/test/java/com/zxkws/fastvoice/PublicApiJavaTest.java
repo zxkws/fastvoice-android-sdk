@@ -9,17 +9,21 @@ import org.junit.Test;
 public class PublicApiJavaTest {
     @Test
     public void locationApiAndSingleListenerAreUsableFromJava() throws Exception {
+        FastVoiceConfig directConfig = new FastVoiceConfig("18", "ws://127.0.0.1:8100/ws");
         FastVoiceConfig config = FastVoiceConfig.builder("ws://127.0.0.1:8100/ws")
+            .areaId("18")
             .getLocation(callback -> callback.invoke(null))
-            .preferredWakeWords(Arrays.asList("布丁", "你好布丁"))
+            .preferredWakeWords(Arrays.asList("咘嘀", "你好咘嘀"))
             .build();
         FastVoiceListener listener = event -> assertNotNull(event);
 
         assertNotNull(config.getGetLocation());
+        assertEquals("18", directConfig.getAreaId());
+        assertEquals("18", config.getAreaId());
         assertEquals(
             boolean.class,
             FastVoiceClient.class.getMethod(
-                "updateLocation", String.class, String.class
+                "updateLocation", String.class
             ).getReturnType()
         );
         assertEquals(
@@ -35,11 +39,11 @@ public class PublicApiJavaTest {
         assertEquals(
             boolean.class,
             FastVoiceClient.class.getMethod(
-                "playWelcome", String.class, String.class
+                "playWelcome", String.class
             ).getReturnType()
         );
         listener.onEvent(new FastVoiceEvent.StateChanged(FastVoiceState.LISTENING));
-        listener.onEvent(new FastVoiceEvent.LocationAck("nanyuan", "station_1907"));
-        listener.onEvent(new FastVoiceEvent.WelcomeAck("nanyuan", null));
+        listener.onEvent(new FastVoiceEvent.LocationAck("station_1907"));
+        listener.onEvent(new FastVoiceEvent.WelcomeAck(null));
     }
 }

@@ -5,11 +5,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CurrentProtocolTest {
-    private val supportedWakeWords = setOf("布丁", "你好布丁")
+    private val supportedWakeWords = setOf("咘嘀", "你好咘嘀")
 
     private fun ready() = ReadyMessage(
         connectionId = "c1",
-        wakeWords = listOf("布丁"),
+        wakeWords = listOf("咘嘀"),
         controlTimeoutMs = 2_500,
     )
 

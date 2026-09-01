@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.13.0 — 2026-09-01
+
+- 破坏性变更：`FastVoiceConfig` 的 endpoint 改为必填，删除内置地址、空白回退、
+  `DEFAULT_ENDPOINT`、`resolveEndpoint()` 和无参 `builder()`。
+- 公开 API 使用 `stationName`，wire protocol 使用 `station_name`；不传 `station_id`。
+
 ## 0.12.2 — 2026-08-13
 
 - `FastVoiceConfig` 未传 endpoint 或传入空白值时，使用内置地址

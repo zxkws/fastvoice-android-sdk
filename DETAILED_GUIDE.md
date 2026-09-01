@@ -1,6 +1,6 @@
 # FastVoice Android SDK 详细指南
 
-适用版本：`0.12.2`
+适用版本：`0.13.0`
 
 ## 1. 能力边界
 
@@ -33,7 +33,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.zxkws:fastvoice-android-sdk:0.12.2")
+    implementation("com.github.zxkws:fastvoice-android-sdk:0.13.0")
 }
 ```
 
@@ -70,8 +70,10 @@ Manifest 如果明确设置了 `android:usesCleartextTraffic="false"`，需改�
 val client = FastVoiceClient(
     applicationContext,
     FastVoiceConfig(
-        // 用户输入为空时自动使用内置 ws://192.168.105.165:8100/ws
-        endpoint = savedEndpointOrUserInput.orEmpty(),
+        // 必填；由宿主业务明确提供
+        endpoint = savedEndpointOrUserInput,
+        // 必填；一个订单/SDK 实例固定一个园区 ID
+        areaId = "18",
         getLocation = { callback ->
             hostLocationService.getLocationAsync(callback)
         },
@@ -84,9 +86,10 @@ val client = FastVoiceClient(
 client.start()
 ```
 
-`FastVoiceConfig` 可以不传 endpoint，此时使用 `FastVoiceConfig.DEFAULT_ENDPOINT`。
-也可以传入用户输入的 `ws://` 或 `wss://` 地址覆盖；空白输入仍使用默认值。SDK
-不接收 token，也不发送
+`FastVoiceConfig` 的 **endpoint 和 areaId 都必填且不能为空**。areaId 是当前订单/WebSocket
+Session 的不可变区域主键，不是可选展示信息。endpoint 去除首尾空格后必须以
+`ws://` 或 `wss://` 开头；SDK 不提供默认地址或失败回退地址。
+SDK 不接收 token，也不发送
 `Authorization`，公网访问控制由前置网关完成。
 
 `start()` 和 `stop()` 幂等；`close()` 永久释放实例，之后不能再 `start()`。
@@ -95,12 +98,12 @@ client.start()
 
 | API | 作用 |
 |---|---|
-| `start()` | 启动音频和 WebSocket |
+| `start()` | 启动音频和 WebSocket；`hello` 一次性发送 `area_id`，收到 `ready` 后开放唤醒 |
 | `stop()` | 停止并允许后续重启 |
 | `interrupt()` | 立即停止本地播放并取消服务端当前回合 |
-| `updateLocation(park, spot?)` | 更新位置；有 spot 时服务端可触发到站播报 |
-| `clearLocation()` | 清除位置与对话历史 |
-| `playWelcome(park, spot?)` | 请求欢迎词 |
+| `updateLocation(stationName)` | 更新当前园区内的站点名称；新名称可触发到站播报 |
+| `clearLocation()` | 清除站点名称/坐标与对话历史，保留 Session 的 `area_id` |
+| `playWelcome(stationName?)` | 请求欢迎词；园区由当前 Session 固定 |
 | `close()` | 永久释放实例 |
 
 返回 `true` 只表示 SDK 已接受/发送操作，服务端确认以 `LocationAck`、
@@ -121,13 +124,19 @@ client.start()
 ## 6. 位置和重连
 
 ```kotlin
-client.updateLocation("南苑森林湿地公园", "1907_station")
-client.playWelcome("南苑森林湿地公园", "北一门")
+client.updateLocation("藻园门站-靠近西苑地铁")
+client.playWelcome("藻园门站-靠近西苑地铁")
 client.clearLocation()
 ```
 
-SDK 内存中保留最后一次 park/spot，断线重连并收到 `ready` 后自动重发。
-`clearLocation()` 后不再恢复旧位置。
+`FastVoiceConfig.areaId` 在 Client 创建后不可变。每次建立新的 WebSocket 连接，SDK
+都在第一条 `hello` 里发送同一个 `area_id`；服务端 `ready` 返回后立即可以唤醒，
+不再存在 area ack 门禁。`clearLocation()` 清掉站点名称/坐标和对话历史，但 Session 的
+`area_id` 继续保留。
+
+同一订单/Client 不支持切换区域。业务订单的区域变化时，关闭旧 Client 并使用新的
+`areaId` 创建新 Client。知识库隔离由服务端把 `area_id` 作为 MaxKB 工作流的同名输入后，在
+检索前选择 `knowledge_ids` 完成。
 
 SDK 不申请定位权限，也不依赖具体定位供应商。初始化时提供宿主已有的方法：
 
@@ -143,7 +152,7 @@ getLocation = { callback ->
 
 ## 7. 唤醒、打断与音频
 
-- `hello` 始终上报 `wake=true`。
+- `hello` 始终上报 `wake=true` 和当前实例不可变的 `area_id`。
 - 服务端通过 `ready.wake_words` 选择 SDK 内置模型支持的唤醒词。
 - 回答播放期 KWS 检测控制词候选，候选仍由服务端 ASR 确认。
 - `interrupt()` 是宿主按钮/生命周期使用的确定性打断。

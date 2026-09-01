@@ -80,7 +80,7 @@ public class AudioRuntimePoliciesTest {
                 "h uàn y ī g è :2.0 #0.18 @换一个\n"
                         + "h uàn y í g è :2.0 #0.18 @换一个\n"
                         + "x ià y ī g è @下一个\n"
-                        + "b ù d īng @布丁\n")));
+                        + "b ù d ī @咘嘀\n")));
         assertEquals(
                 "h uàn y ī g è :2.0 #0.18 @换一个\n"
                         + "h uàn y í g è :2.0 #0.18 @换一个\n"
@@ -92,16 +92,16 @@ public class AudioRuntimePoliciesTest {
     public void nativeKeywordLabelsFailClosedAgainstNegotiatedWakeWords() {
         assertEquals(
                 LocalCommandSpotter.KeywordRoute.WAKE,
-                LocalCommandSpotter.routeKeyword("布丁", Collections.singleton("布丁")));
+                LocalCommandSpotter.routeKeyword("咘嘀", Collections.singleton("咘嘀")));
         assertEquals(
                 LocalCommandSpotter.KeywordRoute.IGNORE,
-                LocalCommandSpotter.routeKeyword("布丁布丁", Collections.singleton("布丁")));
+                LocalCommandSpotter.routeKeyword("咘嘀咘嘀", Collections.singleton("咘嘀")));
         assertEquals(
                 LocalCommandSpotter.KeywordRoute.CONTROL,
-                LocalCommandSpotter.routeKeyword("退下", Collections.singleton("布丁")));
+                LocalCommandSpotter.routeKeyword("退下", Collections.singleton("咘嘀")));
         assertEquals(
                 LocalCommandSpotter.KeywordRoute.CONTROL,
-                LocalCommandSpotter.routeKeyword("继续", Collections.singleton("布丁")));
+                LocalCommandSpotter.routeKeyword("继续", Collections.singleton("咘嘀")));
     }
 
     @Test

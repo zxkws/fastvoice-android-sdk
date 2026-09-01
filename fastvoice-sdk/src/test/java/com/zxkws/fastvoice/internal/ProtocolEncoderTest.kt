@@ -5,39 +5,45 @@ import org.junit.Test
 
 class ProtocolEncoderTest {
     @Test
-    fun helloAlwaysRequestsWake() {
+    fun helloAlwaysRequestsWakeAndBindsAreaOnce() {
         assertEquals(
-            "{\"type\":\"hello\",\"wake\":true}",
-            ProtocolEncoder.hello(),
+            "{\"type\":\"hello\",\"wake\":true,\"area_id\":\"18\"}",
+            ProtocolEncoder.hello("18"),
         )
     }
 
     @Test
     fun locationAndWelcomeMessagesUseExactShapes() {
         assertEquals(
-            "{\"type\":\"location.update\",\"park\":\"nanyuan\",\"spot\":\"station_1907\"}",
-            ProtocolEncoder.locationUpdate("nanyuan", "station_1907"),
-        )
-        assertEquals(
-            "{\"type\":\"location.update\",\"park\":\"nanyuan\"}",
-            ProtocolEncoder.locationUpdate("nanyuan", null),
+            "{\"type\":\"location.update\",\"station_name\":\"藻园门站-靠近西苑地铁\"}",
+            ProtocolEncoder.locationUpdate("藻园门站-靠近西苑地铁"),
         )
         assertEquals(
             "{\"type\":\"location.update\",\"latitude\":39.81,\"longitude\":116.37}",
-            ProtocolEncoder.locationUpdate(null, null, 39.81, 116.37),
+            ProtocolEncoder.locationUpdate(null, 39.81, 116.37),
         )
         assertEquals("{\"type\":\"location.clear\"}", ProtocolEncoder.locationClear())
         assertEquals(
-            "{\"type\":\"welcome.play\",\"park\":\"nanyuan\",\"spot\":\"north_gate\"}",
-            ProtocolEncoder.welcomePlay("nanyuan", "north_gate"),
+            "{\"type\":\"welcome.play\",\"station_name\":\"藻园门站-靠近西苑地铁\"}",
+            ProtocolEncoder.welcomePlay("藻园门站-靠近西苑地铁"),
         )
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun helloRejectsBlankAreaId() {
+        ProtocolEncoder.hello("   ")
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun locationUpdateRejectsEmptyPayload() {
+        ProtocolEncoder.locationUpdate(null)
     }
 
     @Test
     fun playbackControlAndCandidateMessagesUseCurrentNames() {
         assertEquals(
-            "{\"type\":\"wake\",\"word\":\"布丁\"}",
-            ProtocolEncoder.wake("布丁"),
+            "{\"type\":\"wake\",\"word\":\"咘嘀\"}",
+            ProtocolEncoder.wake("咘嘀"),
         )
         assertEquals(
             "{\"type\":\"control.candidate\",\"id\":\"lc-7\",\"playback_id\":3," +

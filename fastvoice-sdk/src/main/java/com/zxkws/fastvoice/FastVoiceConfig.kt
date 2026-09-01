@@ -3,9 +3,6 @@ package com.zxkws.fastvoice
 import java.util.Collections
 import org.json.JSONObject
 
-/** Built-in endpoint used when the host does not provide a custom server address. */
-const val DEFAULT_FASTVOICE_ENDPOINT = "ws://192.168.105.165:8100/ws"
-
 /** Asynchronous location function supplied once by the host application. */
 typealias FastVoiceGetLocation = ((JSONObject?) -> Unit) -> Unit
 
@@ -29,19 +26,25 @@ fun interface FastVoiceLogger {
  * that need transport encryption are responsible for configuring a `wss://` endpoint.
  */
 class FastVoiceConfig @JvmOverloads constructor(
-    endpoint: String = DEFAULT_FASTVOICE_ENDPOINT,
+    areaId: String,
+    endpoint: String,
     preferredWakeWords: List<String> = emptyList(),
     val routeAudioToSpeaker: Boolean = true,
     val logger: FastVoiceLogger? = null,
     val getLocation: FastVoiceGetLocation? = null,
 ) {
-    /** Trimmed custom endpoint, or [DEFAULT_FASTVOICE_ENDPOINT] when input is blank. */
-    val endpoint: String = resolveEndpoint(endpoint)
+    /** Required trimmed WebSocket endpoint supplied by the host application. */
+    val endpoint: String = endpoint.trim()
+
+    /** Required immutable area id for one order/WebSocket session. */
+    val areaId: String = areaId.trim()
 
     val preferredWakeWords: List<String> =
         Collections.unmodifiableList(ArrayList(preferredWakeWords))
 
     init {
+        require(this.areaId.isNotEmpty()) { "areaId must not be blank" }
+        require(this.endpoint.isNotEmpty()) { "endpoint must not be blank" }
         require(this.endpoint.startsWith("wss://", ignoreCase = true) ||
             this.endpoint.startsWith("ws://", ignoreCase = true)) {
             "endpoint must use ws:// or wss://"
@@ -51,6 +54,7 @@ class FastVoiceConfig @JvmOverloads constructor(
     /** Never renders endpoint query parameters or configured callbacks. */
     override fun toString(): String = buildString {
         append("FastVoiceConfig(endpoint=[configured]")
+        append(", areaId=[configured]")
         append(", preferredWakeWords=")
         append(preferredWakeWords)
         append(", routeAudioToSpeaker=")
@@ -62,11 +66,14 @@ class FastVoiceConfig @JvmOverloads constructor(
         append(')')
     }
 
-    class Builder(private val endpoint: String = DEFAULT_FASTVOICE_ENDPOINT) {
+    class Builder(private val endpoint: String) {
+        private var areaId: String = ""
         private var preferredWakeWords: List<String> = emptyList()
         private var routeAudioToSpeaker: Boolean = true
         private var logger: FastVoiceLogger? = null
         private var getLocation: FastVoiceGetLocation? = null
+
+        fun areaId(areaId: String) = apply { this.areaId = areaId }
 
         fun preferredWakeWords(words: List<String>) = apply {
             preferredWakeWords = ArrayList(words)
@@ -82,6 +89,7 @@ class FastVoiceConfig @JvmOverloads constructor(
 
         fun build(): FastVoiceConfig = FastVoiceConfig(
             endpoint = endpoint,
+            areaId = areaId,
             preferredWakeWords = preferredWakeWords,
             routeAudioToSpeaker = routeAudioToSpeaker,
             logger = logger,
@@ -90,17 +98,6 @@ class FastVoiceConfig @JvmOverloads constructor(
     }
 
     companion object {
-        const val DEFAULT_ENDPOINT: String = DEFAULT_FASTVOICE_ENDPOINT
-
-        /** Resolves nullable user input without hiding invalid non-empty values. */
-        @JvmStatic
-        fun resolveEndpoint(customEndpoint: String?): String =
-            customEndpoint?.trim()?.ifEmpty { DEFAULT_FASTVOICE_ENDPOINT }
-                ?: DEFAULT_FASTVOICE_ENDPOINT
-
-        @JvmStatic
-        fun builder(): Builder = Builder()
-
         @JvmStatic
         fun builder(endpoint: String): Builder = Builder(endpoint)
     }

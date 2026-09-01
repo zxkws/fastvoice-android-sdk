@@ -3,7 +3,7 @@
 FastVoice 是面向 Android 的实时语音 SDK。负责 WebSocket 连接、麦克风
 采集、Opus 编解码、端侧唤醒词、流式播放、打断和断线重连。
 
-SDK 当前版本为 `0.12.2`。SDK 不调用 Android `TextToSpeech`；所有可听语音
+SDK 当前版本为 `0.13.0`。SDK 不调用 Android `TextToSpeech`；所有可听语音
 都来自服务端。ASR、TTS、MaxKB 和大模型均是服务端实现细节，Android 不保存
 上游密钥，也不需要因服务端替换语音供应商而改代码。
 
@@ -46,19 +46,20 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.zxkws:fastvoice-android-sdk:0.12.2")
+    implementation("com.github.zxkws:fastvoice-android-sdk:0.13.0")
 }
 ```
 
 ## 快速集成（Kotlin）
 
 ```kotlin
-// 1. 用户未填写地址时，SDK 使用 ws://192.168.105.165:8100/ws
-val customEndpoint = savedEndpointOrUserInput
+// 1. endpoint 和 areaId 都由宿主业务提供，不能为空
+val endpoint = requireNotNull(savedEndpointOrUserInput)
 val client = FastVoiceClient(
     applicationContext,
     FastVoiceConfig(
-        endpoint = customEndpoint.orEmpty(),
+        endpoint = endpoint,
+        areaId = "18", // 必填：本订单固定区域 ID
         getLocation = { callback ->
             hostLocationService.getLocationAsync(callback)
         },
@@ -75,27 +76,27 @@ val client = FastVoiceClient(
     }
 }
 
-// 2. 启动 — 连上就能唤醒说话
+// 2. 启动 — hello 一次性上报 area_id，ready 后本地唤醒直接可用
 client.start()
 
 // 3. 上报位置 — 服务端自动播到站介绍
-client.updateLocation(park = "南苑森林湿地公园", spot = "北一门")
+client.updateLocation("藻园门站-靠近西苑地铁")
 
 // 4. 到下一站
-client.updateLocation(park = "南苑森林湿地公园", spot = "1907站")
+client.updateLocation("1907站")
 
 // 5. 播放欢迎词（主动触发）
-client.playWelcome(park = "南苑森林湿地公园")
+client.playWelcome()
 
-// 6. 清除位置 + 对话历史
+// 6. 清除站点/坐标 + 对话历史；本 Session 的 area_id 仍保留
 client.clearLocation()
 ```
 
 ## 快速集成（Java）
 
 ```java
-// 不传 endpoint 时使用内置 ws://192.168.105.165:8100/ws
-FastVoiceConfig config = FastVoiceConfig.builder()
+FastVoiceConfig config = FastVoiceConfig.builder("ws://voice.example:8100/ws")
+    .areaId("18")
     .getLocation(callback ->
         hostLocationService.getLocationAsync(callback::invoke)
     )
@@ -108,25 +109,25 @@ FastVoiceClient client = new FastVoiceClient(
 );
 
 client.start();
-client.updateLocation("南苑森林湿地公园", "北一门");
-client.playWelcome("南苑森林湿地公园", null);
+client.updateLocation("北一门");
+client.playWelcome(null);
 client.clearLocation();
 ```
 
 ## 服务地址
 
-`FastVoiceConfig` 支持内置地址和用户输入覆盖：
+`FastVoiceConfig` 要求宿主明确提供服务地址：
 
 ```kotlin
-val config = FastVoiceConfig(endpoint = userInput.orEmpty())
+val config = FastVoiceConfig(
+    endpoint = userInput,
+    areaId = "18",
+)
 ```
 
-- 未传 endpoint、传入 `null` 后先调用 `resolveEndpoint()`，或传入空白字符串：使用
-  `FastVoiceConfig.DEFAULT_ENDPOINT`，当前值是 `ws://192.168.105.165:8100/ws`。
-- 非空输入：去除首尾空格后原样使用，并且必须以 `ws://` 或 `wss://` 开头。
-- 用户明确填写的地址连接失败时不会偷偷切回默认地址。
-- 宿主可自行用 SharedPreferences 或 DataStore 保存输入；Sample 已包含输入、保存和
-  “恢复默认”完整示例。
+- endpoint 必填且不能为空；SDK 不提供内置地址或失败回退地址。
+- 输入去除首尾空格后原样使用，并且必须以 `ws://` 或 `wss://` 开头。
+- 宿主可自行用 SharedPreferences 或 DataStore 保存输入；Sample 包含输入、保存和清除。
 
 当前 SDK Manifest 默认允许局域网 `ws://` 明文连接。如果宿主 Manifest 明确设置了
 `android:usesCleartextTraffic="false"`，需要改为 `true`；以后切换到 `wss://` 后可以
@@ -136,12 +137,12 @@ val config = FastVoiceConfig(endpoint = userInput.orEmpty())
 
 | 方法 | 说明 |
 |------|------|
-| `start(): Boolean` | 启动连接和音频。连接成功后立即可唤醒对话。 |
+| `start(): Boolean` | 启动连接和音频。SDK 在 `hello` 一次性上报必填 `area_id`，收到 `ready` 后开放唤醒。 |
 | `stop()` | 断开连接，停止音频。可重新 `start()`。 |
 | `interrupt()` | 打断当前播放并取消服务端当前回合。 |
-| `updateLocation(park, spot?)` | 上报当前位置。服务端收到后自动播放到站内容（如有）。 |
-| `clearLocation()` | 清除位置上下文并重置对话历史。 |
-| `playWelcome(park, spot?)` | 请求服务端播放欢迎词。 |
+| `updateLocation(stationName)` | 更新当前站点名称。服务端收到新名称后自动播放到站内容（如有）。 |
+| `clearLocation()` | 清除站点名称/坐标并重置对话历史；保留本 Session 的 `area_id`。 |
+| `playWelcome(stationName?)` | 请求服务端播放欢迎词；园区已由当前 Session 固定。 |
 | `close()` | 永久释放实例。 |
 
 `start()`、位置和欢迎词方法返回 `Boolean`：`true` 表示 SDK 接受调用，不代表
@@ -179,17 +180,28 @@ getLocation = { callback ->
 }
 ```
 
-匿名函数通过 callback 返回 `{"latitude":39.81,"longitude":116.37}` 或 `null`。SDK 在
-连接就绪和每次唤醒时自动调用、解析和上传，并在重连时先恢复缓存坐标；宿主无需
-手动调用 `updateCoordinates()`。非法坐标只产生可恢复错误，不影响语音连接。
+匿名函数通过 callback 返回 `{"latitude":39.81,"longitude":116.37}` 或 `null`。
+`area_id` 不由定位回调返回，而是来自必填的 `FastVoiceConfig.areaId`。SDK 在连接就绪
+和每次唤醒时自动调用、解析和上传坐标；坐标刷新帧只包含经纬度，不会重复携带
+`area_id`，也不会重复触发到站播报。宿主通常无需手动调用 `updateCoordinates()`。
+
+## 园区与知识库范围
+
+`FastVoiceConfig.areaId` 是一个订单/SDK 实例的必填且不可变字段。连接建立后 SDK
+只在第一条 `hello` 中发送一次 `area_id`。服务端把它固定在 WebSocket Session，随后
+调用 MaxKB 时通过 `form_data.area_id` 交给多园区工作流，由工作流在知识库检索之前
+选择当前园区的 `knowledge_ids`。
+
+同一实例不支持运行中切换园区。订单换园区时应关闭旧 `FastVoiceClient`，用新的
+`areaId` 创建新实例。`updateLocation()` 只负责当前园区里的站点变化。
 
 ## 唤醒词机制
 
 SDK 内置 Sherpa-ONNX 端侧关键词检测（KWS），唤醒词由服务端下发，宿主无需配置。
 
-1. **握手**：连接建立后 SDK 自动发送 `{"type":"hello","wake":true}`，告知服务端
-   客户端已启用端侧 KWS。
-2. **下发**：服务端返回 `{"type":"ready","wake_words":["布丁",...]}`，SDK 将词
+1. **握手**：连接建立后 SDK 自动发送
+   `{"type":"hello","wake":true,"area_id":"18"}`，同时声明端侧 KWS 和本订单固定区域。
+2. **下发**：服务端返回 `{"type":"ready","wake_words":["咘嘀",...]}`，SDK 将词
    表加载到 Sherpa KWS 引擎。
 3. **唤醒确认**：用户说出任一唤醒词 → SDK 检测命中后上报服务端 → 服务端通过
    TTS 回复"在呢"并进入监听状态，等待用户提问。
@@ -202,15 +214,13 @@ SDK 内置 Sherpa-ONNX 端侧关键词检测（KWS），唤醒词由服务端下
 
 ## LLM 上下文行为
 
-服务端 LLM 的回答质量取决于当前位置上下文：
-
 | 状态 | 行为 |
 |------|------|
-| 已调用 `updateLocation(park, spot)` | LLM 自动携带该景点的知识库内容作为上下文，回答与当前站点相关 |
-| 未上报位置 / 调用 `clearLocation()` 后 | LLM 按通用知识回答，不包含特定景点信息 |
-| 切换到新位置（再次 `updateLocation`） | 上下文立即更新为新站点，旧对话历史清除 |
-
-`clearLocation()` 同时清除位置和对话历史。游客下车或订单结束时应调用此方法。
+| `FastVoiceConfig.areaId = "18"` | 整个 WebSocket Session 固定为区域 18，知识请求都发送同一个 `form_data.area_id` |
+| 已调用 `updateLocation("北一门")` | 在当前园区隔离范围内附加站点上下文，并触发新站点到站讲解 |
+| 仅 GPS 刷新 | 只更新坐标，不改变园区或站点，不重复触发到站讲解 |
+| 调用 `clearLocation()` 后 | 清除站点名称/坐标和旧对话，但 Session 的 `area_id` 不变 |
+| 订单切换到新区域 | 关闭旧 Client，以新的 `areaId` 创建新 Client / 新 WebSocket Session |
 
 ## 协议帧参考
 
@@ -219,17 +229,17 @@ SDK 内置 Sherpa-ONNX 端侧关键词检测（KWS），唤醒词由服务端下
 
 ```text
 // 连接建立
-← {"type":"hello","wake":true}
-→ {"type":"ready","connection_id":"c1","wake_words":["布丁"]}
+← {"type":"hello","wake":true,"area_id":"18"}
+→ {"type":"ready","connection_id":"c1","wake_words":["咘嘀"]}
 
 // 位置上报 → 自动播到站介绍
-← {"type":"location.update","park":"nanyuan","spot":"北一门","latitude":39.81,"longitude":116.37}
-→ {"type":"location.ack"}
+← {"type":"location.update","station_name":"藻园门站-靠近西苑地铁","latitude":39.81,"longitude":116.37}
+→ {"type":"location.ack","station_name":"藻园门站-靠近西苑地铁"}
 → （服务端自动播报该站点介绍音频）
 
 // 到下一站
-← {"type":"location.update","park":"nanyuan","spot":"1907_station"}
-→ {"type":"location.ack"}
+← {"type":"location.update","station_name":"1907站"}
+→ {"type":"location.ack","station_name":"1907站"}
 → （自动播报）
 
 // 离开（清除位置 + 对话历史）
@@ -258,12 +268,12 @@ SDK 内置 Sherpa-ONNX 端侧关键词检测（KWS），唤醒词由服务端下
 
 ```kotlin
 // 到北一门
-client.updateLocation("南苑森林湿地公园", "北一门")
+client.updateLocation("北一门")
 // → 服务端自动查知识库，播放北一门介绍
-// → 播完后游客可以唤醒提问："布丁，这里有什么好玩的？"
+// → 播完后游客可以唤醒提问："咘嘀，这里有什么好玩的？"
 
 // 到下一站
-client.updateLocation("南苑森林湿地公园", "运河广场")
+client.updateLocation("运河广场")
 // → 自动播运河广场介绍
 ```
 
@@ -318,8 +328,8 @@ SDK 自动重连。重连后：
 adb reverse tcp:8100 tcp:8100
 ```
 
-Demo 输入为空时使用 `ws://192.168.105.165:8100/ws`。也可以输入其他局域网
-`ws://<服务器IP>:8100/ws`，启动时会保存，点击 “Restore default” 恢复内置地址。
+Demo 必须输入 `ws://` 或 `wss://` 服务地址，启动时会保存，点击 “Clear endpoint”
+可以清除已保存地址。
 
 ## 构建验证
 

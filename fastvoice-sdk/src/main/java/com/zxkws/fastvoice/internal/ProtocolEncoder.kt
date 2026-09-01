@@ -3,29 +3,41 @@ package com.zxkws.fastvoice.internal
 /** Owns every JSON field in the single FastVoice wire protocol. */
 internal object ProtocolEncoder {
     @JvmSynthetic
-    fun hello(): String = JsonEncoder.encode(
+    fun hello(areaId: String): String {
+        val normalizedAreaId = areaId.trim()
+        require(normalizedAreaId.isNotEmpty()) { "areaId must not be blank" }
+        return JsonEncoder.encode(
         linkedMapOf(
             "type" to "hello",
             "wake" to true,
+            "area_id" to normalizedAreaId,
         ),
-    )
+        )
+    }
 
     @JvmSynthetic
     fun locationUpdate(
-        park: String?,
-        spot: String?,
+        stationName: String?,
         latitude: Double? = null,
         longitude: Double? = null,
-    ): String = JsonEncoder.encode(
-        linkedMapOf<String, Any?>(
-            "type" to "location.update",
-        ).apply {
-            if (park != null) put("park", park)
-            if (spot != null) put("spot", spot)
-            if (latitude != null) put("latitude", latitude)
-            if (longitude != null) put("longitude", longitude)
-        },
-    )
+    ): String {
+        require((latitude == null) == (longitude == null)) {
+            "latitude and longitude must be provided together"
+        }
+        val normalizedStationName = stationName?.trim()?.takeIf(String::isNotEmpty)
+        require(normalizedStationName != null || latitude != null) {
+            "stationName or coordinates must be provided"
+        }
+        return JsonEncoder.encode(
+            linkedMapOf<String, Any?>(
+                "type" to "location.update",
+            ).apply {
+                if (normalizedStationName != null) put("station_name", normalizedStationName)
+                if (latitude != null) put("latitude", latitude)
+                if (longitude != null) put("longitude", longitude)
+            },
+        )
+    }
 
     @JvmSynthetic
     fun locationClear(): String = JsonEncoder.encode(
@@ -33,12 +45,9 @@ internal object ProtocolEncoder {
     )
 
     @JvmSynthetic
-    fun welcomePlay(park: String, spot: String?): String = JsonEncoder.encode(
-        linkedMapOf<String, Any?>(
-            "type" to "welcome.play",
-            "park" to park,
-        ).apply {
-            if (spot != null) put("spot", spot)
+    fun welcomePlay(stationName: String?): String = JsonEncoder.encode(
+        linkedMapOf<String, Any?>("type" to "welcome.play").apply {
+            stationName?.trim()?.takeIf(String::isNotEmpty)?.let { put("station_name", it) }
         },
     )
 

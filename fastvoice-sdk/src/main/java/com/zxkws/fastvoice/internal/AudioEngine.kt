@@ -69,10 +69,10 @@ internal class AudioEngine(
         private const val PLAYBACK_PROGRESS_INTERVAL_MS = 500L
 
         val SUPPORTED_WAKE_WORDS: Set<String> = linkedSetOf(
-            "布丁",
-            "布丁布丁",
-            "你好布丁",
-            "布丁你好",
+            "咘嘀",
+            "咘嘀咘嘀",
+            "你好咘嘀",
+            "咘嘀你好",
         )
     }
 
@@ -124,7 +124,7 @@ internal class AudioEngine(
     private val playbackControlLock = Any()
 
     @Volatile
-    private var enabledWakeWords: Set<String> = setOf("布丁")
+    private var enabledWakeWords: Set<String> = setOf("咘嘀")
 
     @Volatile
     private var recorder: AudioRecord? = null

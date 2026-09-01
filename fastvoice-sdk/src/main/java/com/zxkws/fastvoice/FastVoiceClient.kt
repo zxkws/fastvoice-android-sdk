@@ -68,10 +68,16 @@ class FastVoiceClient @JvmOverloads constructor(
         LocalCommandTimeoutPolicy.DEFAULT_SERVER_TIMEOUT_MS,
     )
 
-    @Volatile private var locationPark: String? = null
-    @Volatile private var locationSpot: String? = null
-    @Volatile private var locationLatitude: Double? = null
-    @Volatile private var locationLongitude: Double? = null
+    private data class LocationSnapshot(
+        val stationName: String? = null,
+        val latitude: Double? = null,
+        val longitude: Double? = null,
+    )
+
+    // Keep location state mutation and its wire emission ordered. In particular, a stale
+    // reconnect/provider update must never be emitted after clearLocation().
+    private val locationLock = Any()
+    private var locationSnapshot = LocationSnapshot()
     private var playbackContentId: String? = null
 
     private val scheduler = Executors.newSingleThreadScheduledExecutor { runnable ->
@@ -217,19 +223,21 @@ class FastVoiceClient @JvmOverloads constructor(
      * `true` means the SDK sent (or will retry) the update; only
      * [FastVoiceEvent.LocationAck] means the server accepted it.
      */
-    fun updateLocation(park: String, spot: String? = null): Boolean {
+    fun updateLocation(stationName: String): Boolean {
         check(!closed.get()) { "FastVoiceClient is closed" }
+        val normalizedStationName = stationName.trim()
+        require(normalizedStationName.isNotEmpty()) { "stationName must not be blank" }
         if (!started.get()) return false
-        locationPark = park
-        locationSpot = spot
-        return sendIfReady(
-            ProtocolEncoder.locationUpdate(
-                park,
-                spot,
-                locationLatitude,
-                locationLongitude,
-            ),
-        )
+        return synchronized(locationLock) {
+            locationSnapshot = locationSnapshot.copy(stationName = normalizedStationName)
+            sendIfReady(
+                ProtocolEncoder.locationUpdate(
+                    locationSnapshot.stationName,
+                    locationSnapshot.latitude,
+                    locationSnapshot.longitude,
+                ),
+            )
+        }
     }
 
     /** Updates the coordinates used by server-side location services such as weather. */
@@ -242,26 +250,36 @@ class FastVoiceClient @JvmOverloads constructor(
             "longitude must be finite and within -180..180"
         }
         if (!started.get()) return false
-        locationLatitude = latitude
-        locationLongitude = longitude
-        return sendIfReady(ProtocolEncoder.locationUpdate(null, null, latitude, longitude))
+        return synchronized(locationLock) {
+            locationSnapshot = locationSnapshot.copy(
+                latitude = latitude,
+                longitude = longitude,
+            )
+            sendIfReady(
+                ProtocolEncoder.locationUpdate(
+                    null,
+                    latitude,
+                    longitude,
+                ),
+            )
+        }
     }
 
     fun clearLocation(): Boolean {
         check(!closed.get()) { "FastVoiceClient is closed" }
         if (!started.get()) return false
-        locationPark = null
-        locationSpot = null
-        locationLatitude = null
-        locationLongitude = null
-        locationRequestEpoch.incrementAndGet()
-        return sendIfReady(ProtocolEncoder.locationClear())
+        return synchronized(locationLock) {
+            locationRequestEpoch.incrementAndGet()
+            locationSnapshot = LocationSnapshot()
+            sendIfReady(ProtocolEncoder.locationClear())
+        }
     }
 
-    fun playWelcome(park: String, spot: String? = null): Boolean {
+    @JvmOverloads
+    fun playWelcome(stationName: String? = null): Boolean {
         check(!closed.get()) { "FastVoiceClient is closed" }
         if (!started.get()) return false
-        return sendIfReady(ProtocolEncoder.welcomePlay(park, spot))
+        return sendIfReady(ProtocolEncoder.welcomePlay(stationName))
     }
 
     @Synchronized
@@ -306,7 +324,7 @@ class FastVoiceClient @JvmOverloads constructor(
                 webSocket.close(1_000, "stale connection")
                 return
             }
-            webSocket.send(ProtocolEncoder.hello())
+            webSocket.send(ProtocolEncoder.hello(config.areaId))
         }
 
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
@@ -404,18 +422,17 @@ class FastVoiceClient @JvmOverloads constructor(
     }
 
     private fun sendStoredLocation() {
-        val park = locationPark
-        val latitude = locationLatitude
-        val longitude = locationLongitude
-        if (park == null && (latitude == null || longitude == null)) return
-        sendIfReady(
-            ProtocolEncoder.locationUpdate(
-                park,
-                locationSpot,
-                latitude,
-                longitude,
-            ),
-        )
+        synchronized(locationLock) {
+            val snapshot = locationSnapshot
+            if (snapshot.stationName == null && snapshot.latitude == null) return
+            sendIfReady(
+                ProtocolEncoder.locationUpdate(
+                    snapshot.stationName,
+                    snapshot.latitude,
+                    snapshot.longitude,
+                ),
+            )
+        }
     }
 
     private fun requestHostLocation() {
@@ -441,9 +458,7 @@ class FastVoiceClient @JvmOverloads constructor(
     }
 
     private fun acceptHostLocation(request: Long, json: JSONObject?) {
-        if (json == null || !started.get() || closed.get() ||
-            locationRequestEpoch.get() != request
-        ) {
+        if (json == null || !started.get() || closed.get()) {
             return
         }
         val latitude = (json.opt("latitude") as? Number)?.toDouble()
@@ -455,9 +470,22 @@ class FastVoiceClient @JvmOverloads constructor(
             emitLocalError("location_provider_invalid_result")
             return
         }
-        locationLatitude = latitude
-        locationLongitude = longitude
-        sendIfReady(ProtocolEncoder.locationUpdate(null, null, latitude, longitude))
+        synchronized(locationLock) {
+            if (!started.get() || closed.get() || locationRequestEpoch.get() != request) {
+                return
+            }
+            locationSnapshot = locationSnapshot.copy(
+                latitude = latitude,
+                longitude = longitude,
+            )
+            sendIfReady(
+                ProtocolEncoder.locationUpdate(
+                    null,
+                    latitude,
+                    longitude,
+                ),
+            )
+        }
     }
 
     private fun handleState(message: JSONObject) {
@@ -489,31 +517,41 @@ class FastVoiceClient @JvmOverloads constructor(
     }
 
     private fun handleLocationAck(message: JSONObject) {
-        val park = if (message.has("park") && !message.isNull("park")) {
-            message.strictString("park")
+        if (!message.hasExactFields(setOf("type")) &&
+            !message.hasExactFields(setOf("type", "station_name"))
+        ) {
+            terminateProtocol("invalid_location_ack")
+            return
+        }
+        val stationName = if (message.has("station_name") && !message.isNull("station_name")) {
+            message.strictString("station_name")
         } else {
             null
         }
-        val spot = if (message.has("spot") && !message.isNull("spot")) {
-            message.strictString("spot")
-        } else {
-            null
+        if (message.has("station_name") && stationName.isNullOrBlank()) {
+            terminateProtocol("invalid_location_ack")
+            return
         }
-        emit(FastVoiceEvent.LocationAck(park ?: "", spot))
+        emit(FastVoiceEvent.LocationAck(stationName))
     }
 
     private fun handleWelcomeAck(message: JSONObject) {
-        val park = if (message.has("park") && !message.isNull("park")) {
-            message.strictString("park")
+        if (!message.hasExactFields(setOf("type")) &&
+            !message.hasExactFields(setOf("type", "station_name"))
+        ) {
+            terminateProtocol("invalid_welcome_ack")
+            return
+        }
+        val stationName = if (message.has("station_name") && !message.isNull("station_name")) {
+            message.strictString("station_name")
         } else {
             null
         }
-        val spot = if (message.has("spot") && !message.isNull("spot")) {
-            message.strictString("spot")
-        } else {
-            null
+        if (message.has("station_name") && stationName.isNullOrBlank()) {
+            terminateProtocol("invalid_welcome_ack")
+            return
         }
-        emit(FastVoiceEvent.WelcomeAck(park ?: "", spot))
+        emit(FastVoiceEvent.WelcomeAck(stationName))
     }
 
     private fun handlePlaybackStart(message: JSONObject) {

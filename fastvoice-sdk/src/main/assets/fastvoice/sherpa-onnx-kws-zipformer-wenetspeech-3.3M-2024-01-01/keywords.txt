@@ -1,7 +1,7 @@
-b ù d īng @布丁
-b ù d īng b ù d īng @布丁布丁
-n ǐ h ǎo b ù d īng @你好布丁
-b ù d īng n ǐ h ǎo @布丁你好
+b ù d ī @咘嘀
+b ù d ī b ù d ī @咘嘀咘嘀
+n ǐ h ǎo b ù d ī @你好咘嘀
+b ù d ī n ǐ h ǎo @咘嘀你好
 h uàn y ī g è @换一个
 h uàn y í g è @换一个
 h uàn g è @换个

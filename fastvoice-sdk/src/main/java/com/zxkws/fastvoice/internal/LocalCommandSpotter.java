@@ -50,7 +50,7 @@ final class LocalCommandSpotter {
     }
 
     public synchronized void init(AssetManager assets) {
-        init(assets, Collections.singleton("布丁"));
+        init(assets, Collections.singleton("咘嘀"));
     }
 
     public synchronized void init(AssetManager assets, Collection<String> wakeWords) {

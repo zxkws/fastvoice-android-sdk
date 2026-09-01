@@ -34,8 +34,8 @@ class MainActivity : Activity() {
     }
 
     private lateinit var endpointInput: EditText
-    private lateinit var parkInput: EditText
-    private lateinit var spotInput: EditText
+    private lateinit var areaInput: EditText
+    private lateinit var stationNameInput: EditText
     private lateinit var latitudeInput: EditText
     private lateinit var longitudeInput: EditText
 
@@ -89,7 +89,7 @@ class MainActivity : Activity() {
     private fun bindSdk() {
         startButton.setOnClickListener { startVoice() }
         stopButton.setOnClickListener { voiceClient?.stop() }
-        restoreEndpointButton.setOnClickListener { restoreDefaultEndpoint() }
+        restoreEndpointButton.setOnClickListener { clearSavedEndpoint() }
         interruptButton.setOnClickListener { voiceClient?.interrupt() }
         updateLocationButton.setOnClickListener { updateSampleLocation() }
         welcomeButton.setOnClickListener { playSampleWelcome() }
@@ -103,10 +103,12 @@ class MainActivity : Activity() {
         }
 
         val customEndpoint = endpointInput.text.toString()
+        val areaId = areaInput.text.toString()
 
         try {
             val config = FastVoiceConfig(
                 endpoint = customEndpoint,
+                areaId = areaId,
                 getLocation = { callback -> getSampleLocationAsync(callback) },
                 logger = FastVoiceLogger { level, message, error ->
                     Log.d("FastVoiceSample", "$level $message", error)
@@ -124,20 +126,18 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun restoreDefaultEndpoint() {
+    private fun clearSavedEndpoint() {
         getSharedPreferences(SETTINGS_NAME, MODE_PRIVATE).edit().remove(ENDPOINT_KEY).apply()
         endpointInput.setText("")
-        endpointInput.hint = FastVoiceConfig.DEFAULT_ENDPOINT
     }
 
     private fun updateSampleLocation() {
-        val park = parkInput.text.toString()
-        val spot = spotInput.text.toString().ifBlank { null }
-        if (park.isBlank()) {
-            renderError("park is required")
+        val stationName = stationNameInput.text.toString().trim()
+        if (stationName.isBlank()) {
+            renderError("stationName is required")
             return
         }
-        voiceClient?.updateLocation(park, spot)
+        voiceClient?.updateLocation(stationName)
     }
 
     private fun getSampleLocationAsync(callback: (JSONObject?) -> Unit) {
@@ -151,13 +151,8 @@ class MainActivity : Activity() {
     }
 
     private fun playSampleWelcome() {
-        val park = parkInput.text.toString()
-        val spot = spotInput.text.toString().ifBlank { null }
-        if (park.isBlank()) {
-            renderError("park is required")
-            return
-        }
-        voiceClient?.playWelcome(park, spot)
+        val stationName = stationNameInput.text.toString().ifBlank { null }
+        voiceClient?.playWelcome(stationName)
     }
 
     private fun requestMicrophonePermissionIfNeeded() {
@@ -212,12 +207,12 @@ class MainActivity : Activity() {
         val pad = (16 * density).toInt()
         val gap = (8 * density).toInt()
 
-        endpointInput = input(FastVoiceConfig.DEFAULT_ENDPOINT).apply {
+        endpointInput = input("ws://host:8100/ws").apply {
             setText(getSharedPreferences(SETTINGS_NAME, MODE_PRIVATE).getString(ENDPOINT_KEY, ""))
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
         }
-        parkInput = input("park").apply { setText("南苑森林湿地公园") }
-        spotInput = input("spot (optional)")
+        areaInput = input("area id").apply { setText("18") }
+        stationNameInput = input("station name (optional)")
         latitudeInput = input("latitude").apply {
             setText("39.81")
             inputType = InputType.TYPE_CLASS_NUMBER or
@@ -231,7 +226,7 @@ class MainActivity : Activity() {
 
         startButton = button("Start")
         stopButton = button("Stop")
-        restoreEndpointButton = button("Restore default")
+        restoreEndpointButton = button("Clear endpoint")
         interruptButton = button("Interrupt")
         updateLocationButton = button("Update location")
         welcomeButton = button("Play welcome")
@@ -256,10 +251,10 @@ class MainActivity : Activity() {
             addView(label("Latitude / Longitude"))
             addView(latitudeInput)
             addView(longitudeInput)
-            addView(label("Park"))
-            addView(parkInput)
-            addView(label("Spot"))
-            addView(spotInput)
+            addView(label("Area ID (fixed for this session)"))
+            addView(areaInput)
+            addView(label("Station name"))
+            addView(stationNameInput)
             addView(buttonRow(updateLocationButton, welcomeButton, clearLocationButton))
             addView(rawOutput("state", stateValue, gap))
             addView(rawOutput("asr", asrValue, gap))
