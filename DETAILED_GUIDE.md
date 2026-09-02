@@ -1,6 +1,6 @@
 # FastVoice Android SDK 详细指南
 
-适用版本：`0.13.0`
+适用版本：`0.14.0`
 
 ## 1. 能力边界
 
@@ -19,7 +19,9 @@ SDK 不包含 ASR、TTS、MaxKB 或大模型客户端。当前服务端使用讯
 
 ## 2. 集成
 
-### 2.1 JitPack
+### 2.1 Maven Central
+
+FastVoice Android SDK 仅通过 Maven Central 提供官方客户端接入。
 
 ```kotlin
 // settings.gradle.kts
@@ -27,34 +29,16 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        maven("https://jitpack.io")
     }
 }
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.zxkws:fastvoice-android-sdk:0.13.0")
+    implementation("io.github.zxkws:fastvoice-android-sdk:0.14.0")
 }
 ```
 
-### 2.2 本地 AAR
-
-```bash
-./gradlew :fastvoice-sdk:assembleRelease
-```
-
-复制 `fastvoice-sdk/build/outputs/aar/fastvoice-sdk-release.aar` 到 App 的 `libs/`，并加入：
-
-```kotlin
-dependencies {
-    implementation(files("libs/fastvoice-sdk-release.aar"))
-    implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.25")
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("io.github.jaredmdobson:concentus:1.0.2")
-}
-```
-
-### 2.3 Android 配置
+### 2.2 Android 配置
 
 ```xml
 <uses-permission android:name="android.permission.RECORD_AUDIO" />
@@ -177,8 +161,17 @@ JAVA_HOME="/path/to/jdk17" ./gradlew \
 发布版本由 `gradle.properties` 的 `VERSION_NAME` 唯一决定。推送同名标签后，GitHub Actions 会：
 
 1. 校验 tag 与 Gradle 版本一致。
-2. 运行测试、lint、AAR/Sample 构建和 Maven Local 验证。
-3. 检查 AAR 中的 ABI、原生库和许可证。
-4. 创建 GitHub Release，上传带版本的 AAR、Sample APK 和 `SHA256SUMS.txt`。
+2. 运行测试、lint、AAR/Sample 构建和 Maven Local 坐标验证。
+3. 检查 AAR 中的 ABI、原生库、许可证，以及 Central 所需的 sources/javadoc/POM。
+4. 使用 GitHub Secrets 中的 Sonatype Central Portal token 与 GPG 私钥签名并发布到 Maven Central。
+5. Maven Central 发布成功后创建 GitHub Release，上传带版本的 AAR、Sample APK 和 `SHA256SUMS.txt`。
 
-JitPack 使用同一 tag 构建 Maven 坐标。
+首次发布前，需要在 Sonatype Central Portal 验证 `io.github.zxkws` namespace，并在 GitHub 仓库配置：
+
+- `MAVEN_CENTRAL_USERNAME`
+- `MAVEN_CENTRAL_PASSWORD`
+- `SIGNING_IN_MEMORY_KEY`
+- `SIGNING_IN_MEMORY_KEY_PASSWORD`
+
+其中 Central 用户名/密码应使用 Portal 生成的发布 token，签名私钥使用 ASCII-armored GPG private key。
+客户端只使用 `mavenCentral()`，不需要 JitPack 或本地 AAR。

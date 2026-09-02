@@ -1,8 +1,0 @@
-jdk:
-  - openjdk17
-
-before_install:
-  - chmod +x ./gradlew
-
-install:
-  - ./gradlew :fastvoice-sdk:publishReleasePublicationToMavenLocal --no-daemon --stacktrace

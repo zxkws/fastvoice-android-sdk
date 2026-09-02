@@ -1,12 +1,10 @@
-import org.gradle.api.publish.maven.MavenPublication
-
 plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.kotlin.android)
-    `maven-publish`
+    alias(libs.plugins.maven.publish)
 }
 
-group = "com.github.zxkws"
+group = "io.github.zxkws"
 version = providers.gradleProperty("VERSION_NAME").get()
 
 android {
@@ -33,12 +31,6 @@ android {
         jvmTarget = "11"
     }
 
-    publishing {
-        singleVariant("release") {
-            withSourcesJar()
-        }
-    }
-
     testOptions {
         unitTests.isIncludeAndroidResources = true
     }
@@ -53,39 +45,50 @@ dependencies {
     testImplementation(libs.junit)
 }
 
-afterEvaluate {
-    publishing {
-        publications {
-            create<MavenPublication>("release") {
-                groupId = "com.github.zxkws"
-                artifactId = "fastvoice-android-sdk"
-                version = project.version.toString()
-                from(components["release"])
+// Signing is enabled only when a key is supplied. This keeps local Maven
+// verification usable while guaranteeing that Central CI releases are signed.
+val hasSigningKey =
+    providers.gradleProperty("signingInMemoryKey").isPresent ||
+        providers.gradleProperty("signing.secretKeyRingFile").isPresent
 
-                pom {
-                    name = "FastVoice Android SDK"
-                    description = "Low-friction Android client SDK for the FastVoice voice assistant service."
-                    url = "https://github.com/zxkws/fastvoice-android-sdk"
-                    licenses {
-                        license {
-                            name = "The Apache License, Version 2.0"
-                            url = "https://www.apache.org/licenses/LICENSE-2.0.txt"
-                            distribution = "repo"
-                        }
-                    }
-                    developers {
-                        developer {
-                            id = "zxkws"
-                            name = "zxkws"
-                        }
-                    }
-                    scm {
-                        connection = "scm:git:git://github.com/zxkws/fastvoice-android-sdk.git"
-                        developerConnection = "scm:git:ssh://github.com/zxkws/fastvoice-android-sdk.git"
-                        url = "https://github.com/zxkws/fastvoice-android-sdk"
-                    }
-                }
+mavenPublishing {
+    coordinates(
+        groupId = "io.github.zxkws",
+        artifactId = "fastvoice-android-sdk",
+        version = project.version.toString(),
+    )
+
+    publishToMavenCentral(automaticRelease = true)
+    if (hasSigningKey) {
+        signAllPublications()
+    }
+
+    pom {
+        name.set("FastVoice Android SDK")
+        description.set("Low-friction Android client SDK for the FastVoice voice assistant service.")
+        inceptionYear.set("2026")
+        url.set("https://github.com/zxkws/fastvoice-android-sdk")
+
+        licenses {
+            license {
+                name.set("The Apache License, Version 2.0")
+                url.set("https://www.apache.org/licenses/LICENSE-2.0.txt")
+                distribution.set("repo")
             }
+        }
+
+        developers {
+            developer {
+                id.set("zxkws")
+                name.set("zxkws")
+                url.set("https://github.com/zxkws")
+            }
+        }
+
+        scm {
+            connection.set("scm:git:git://github.com/zxkws/fastvoice-android-sdk.git")
+            developerConnection.set("scm:git:ssh://git@github.com/zxkws/fastvoice-android-sdk.git")
+            url.set("https://github.com/zxkws/fastvoice-android-sdk")
         }
     }
 }

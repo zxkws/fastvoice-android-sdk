@@ -44,14 +44,14 @@ jobs:
             :fastvoice-sdk:testDebugUnitTest \
             :fastvoice-sdk:lint \
             :fastvoice-sdk:assembleRelease \
-            :fastvoice-sdk:publishReleasePublicationToMavenLocal \
+            :fastvoice-sdk:publishToMavenLocal \
             :sample:assembleDebug \
             --stacktrace
 
       - name: Compile sample against published Maven coordinate
         run: ./gradlew :sample:clean :sample:assembleDebug -PusePublishedSdk --stacktrace
 
-      - name: Verify distributable AAR
+      - name: Verify distributable Maven publication
         shell: bash
         run: |
           set -euo pipefail
@@ -71,17 +71,24 @@ jobs:
           grep -Fxq "assets/fastvoice/licenses/NOTICE.txt" "$listing"
           grep -Fxq "assets/fastvoice/licenses/ONNX-Runtime-MIT.txt" "$listing"
           grep -Fxq "assets/fastvoice/licenses/WebRTC-BSD-3-Clause.txt" "$listing"
-          # Silero VAD was removed in 0.9.0 and must not reappear. armeabi
-          # (ARMv5/v6) is unsupported by the NDK and must never be shipped.
           if grep -Eqi "silero|jni/armeabi/" "$listing"; then
             exit 1
           fi
+
           version="$(./gradlew -q :fastvoice-sdk:properties | sed -n 's/^version: //p' | head -n 1)"
-          published="$HOME/.m2/repository/com/github/zxkws/fastvoice-android-sdk/$version"
+          published="$HOME/.m2/repository/io/github/zxkws/fastvoice-android-sdk/$version"
           test -f "$published/fastvoice-android-sdk-$version.aar"
+          test -f "$published/fastvoice-android-sdk-$version-sources.jar"
+          test -f "$published/fastvoice-android-sdk-$version-javadoc.jar"
           pom="$published/fastvoice-android-sdk-$version.pom"
+          test -f "$pom"
+          grep -q "<groupId>io.github.zxkws</groupId>" "$pom"
+          grep -q "<artifactId>fastvoice-android-sdk</artifactId>" "$pom"
           grep -q "com.squareup.okhttp3" "$pom"
           grep -q "concentus" "$pom"
+          grep -q "<licenses>" "$pom"
+          grep -q "<developers>" "$pom"
+          grep -q "<scm>" "$pom"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -92,9 +99,50 @@ jobs:
             fastvoice-sdk/build/outputs/aar/fastvoice-sdk-release.aar
             sample/build/outputs/apk/debug/sample-debug.apk
 
-  release:
+  publish-central:
     if: startsWith(github.ref, 'refs/tags/')
     needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Validate Maven Central secrets
+        env:
+          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          SIGNING_IN_MEMORY_KEY: ${{ secrets.SIGNING_IN_MEMORY_KEY }}
+          SIGNING_IN_MEMORY_KEY_PASSWORD: ${{ secrets.SIGNING_IN_MEMORY_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$MAVEN_CENTRAL_USERNAME"
+          test -n "$MAVEN_CENTRAL_PASSWORD"
+          test -n "$SIGNING_IN_MEMORY_KEY"
+          test -n "$SIGNING_IN_MEMORY_KEY_PASSWORD"
+
+      - name: Publish and release to Maven Central
+        env:
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_IN_MEMORY_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_IN_MEMORY_KEY_PASSWORD }}
+        run: ./gradlew :fastvoice-sdk:publishToMavenCentral --no-daemon --stacktrace
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [verify, publish-central]
     runs-on: ubuntu-latest
     permissions:
       contents: write

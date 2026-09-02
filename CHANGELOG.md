@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.0 — 2026-09-02
+
+- 官方 Android 客户端接入方式统一迁移到 Maven Central，发布坐标改为
+  `io.github.zxkws:fastvoice-android-sdk`。
+- 移除 JitPack 和面向宿主的本地 AAR 接入说明。
+- 发布流程增加 Central Portal、GPG 签名、sources/javadoc/POM 校验，并仅在
+  Maven Central 发布成功后创建 GitHub Release。
+
 ## 0.13.0 — 2026-09-01
 
 - 破坏性变更：`FastVoiceConfig` 的 endpoint 改为必填，删除内置地址、空白回退、

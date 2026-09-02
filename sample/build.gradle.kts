@@ -32,7 +32,7 @@ android {
 dependencies {
     if (providers.gradleProperty("usePublishedSdk").isPresent) {
         implementation(
-            "com.github.zxkws:fastvoice-android-sdk:${providers.gradleProperty("VERSION_NAME").get()}",
+            "io.github.zxkws:fastvoice-android-sdk:${providers.gradleProperty("VERSION_NAME").get()}",
         )
     } else {
         implementation(project(":fastvoice-sdk"))

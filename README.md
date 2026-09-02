@@ -3,7 +3,7 @@
 FastVoice 是面向 Android 的实时语音 SDK。负责 WebSocket 连接、麦克风
 采集、Opus 编解码、端侧唤醒词、流式播放、打断和断线重连。
 
-SDK 当前版本为 `0.13.0`。SDK 不调用 Android `TextToSpeech`；所有可听语音
+SDK 当前版本为 `0.14.0`。SDK 不调用 Android `TextToSpeech`；所有可听语音
 都来自服务端。ASR、TTS、MaxKB 和大模型均是服务端实现细节，Android 不保存
 上游密钥，也不需要因服务端替换语音供应商而改代码。
 
@@ -14,25 +14,10 @@ SDK 当前版本为 `0.13.0`。SDK 不调用 Android `TextToSpeech`；所有可�
 - `android.permission.RECORD_AUDIO`
 - JDK 17（构建 SDK）
 
-## 引入 AAR
+## 通过 Maven Central 引入
 
-```shell
-./gradlew :fastvoice-sdk:check :fastvoice-sdk:assembleRelease
-```
-
-将 `fastvoice-sdk/build/outputs/aar/fastvoice-sdk-release.aar` 复制到应用模块
-`libs/`，再声明运行时依赖：
-
-```kotlin
-dependencies {
-    implementation(files("libs/fastvoice-sdk-release.aar"))
-    implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.25")
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("io.github.jaredmdobson:concentus:1.0.2")
-}
-```
-
-也可以通过 JitPack 使用发布标签：
+FastVoice Android SDK 仅通过 Maven Central 提供官方客户端接入。宿主项目通常已经
+包含 `mavenCentral()`，无需增加额外仓库。
 
 ```kotlin
 // settings.gradle.kts
@@ -40,13 +25,12 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        maven("https://jitpack.io")
     }
 }
 
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.zxkws:fastvoice-android-sdk:0.13.0")
+    implementation("io.github.zxkws:fastvoice-android-sdk:0.14.0")
 }
 ```
 
