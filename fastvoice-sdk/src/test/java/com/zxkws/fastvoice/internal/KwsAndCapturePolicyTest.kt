@@ -2,6 +2,7 @@ package com.zxkws.fastvoice.internal
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -68,6 +69,32 @@ class KwsAndCapturePolicyTest {
                 playbackActive = false,
             ),
         )
+    }
+
+    @Test
+    fun playbackAndEchoTailUplinkUseUnmodifiedAecOutput() {
+        val raw = byteArrayOf(1, 2, 3, 4)
+        val processed = byteArrayOf(0, 0, 1, 0)
+        assertSame(processed, CaptureFramePolicy.uplink(raw, processed, hasRecentRender = true))
+    }
+
+    @Test
+    fun idleUplinkPreservesRawMicAndSwitchesWithRenderAvailability() {
+        val raw = byteArrayOf(1, 2, 3, 4)
+        val processed = byteArrayOf(0, 0, 1, 0)
+        for (hasRender in listOf(false, true, true, false)) {
+            assertSame(
+                if (hasRender) processed else raw,
+                CaptureFramePolicy.uplink(raw, processed, hasRecentRender = hasRender),
+            )
+        }
+    }
+
+    @Test
+    fun aecProcessingFailureCanRetainExistingRawFallback() {
+        val raw = byteArrayOf(1, 2, 3, 4)
+        // AudioEngine reports AEC failures and supplies raw MIC as the failed processing result.
+        assertSame(raw, CaptureFramePolicy.uplink(raw, raw, hasRecentRender = true))
     }
 
     @Test

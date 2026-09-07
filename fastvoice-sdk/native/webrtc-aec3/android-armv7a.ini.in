@@ -18,3 +18,6 @@ default_library = 'shared'
 # are emitted last, so redefining to 32 wins.
 c_args = ['-fPIC', '-mfpu=neon', '-mfloat-abi=softfp', '-U_FILE_OFFSET_BITS', '-D_FILE_OFFSET_BITS=32']
 cpp_args = ['-fPIC', '-mfpu=neon', '-mfloat-abi=softfp', '-U_FILE_OFFSET_BITS', '-D_FILE_OFFSET_BITS=32']
+# Keep both ABI builds on the same linker policy; 16 KB alignment remains valid on 4 KB devices.
+c_link_args = ['-Wl,-z,max-page-size=16384']
+cpp_link_args = ['-Wl,-z,max-page-size=16384']

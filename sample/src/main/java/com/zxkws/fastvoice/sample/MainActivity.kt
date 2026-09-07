@@ -151,8 +151,7 @@ class MainActivity : Activity() {
     }
 
     private fun playSampleWelcome() {
-        val stationName = stationNameInput.text.toString().ifBlank { null }
-        voiceClient?.playWelcome(stationName)
+        voiceClient?.playWelcome()
     }
 
     private fun requestMicrophonePermissionIfNeeded() {

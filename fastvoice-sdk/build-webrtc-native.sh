@@ -153,7 +153,8 @@ for abi in "${requested_abis[@]}"; do
   cp "$sysroot_lib/libc++_shared.so" "$jni_dir/libc++_shared.so"
 
   # --no-undefined makes the link fail rather than deferring a missing symbol to
-  # dlopen() on the device.
+  # dlopen() on the device. max-page-size keeps the JNI ELF loadable on 16 KB
+  # page-size devices without changing the API 23 deployment target.
   "$clang" \
     -shared -fPIC -O3 -std=c++17 -fvisibility=hidden \
     "${jni_flags[@]}" \
@@ -162,6 +163,7 @@ for abi in "${requested_abis[@]}"; do
     "$native_dir/webrtc_aec3_jni.cpp" \
     -L"$build_dir/webrtc/modules/audio_processing" \
     -Wl,--no-undefined \
+    -Wl,-z,max-page-size=16384 \
     -Wl,-rpath,'$ORIGIN' \
     -l:libwebrtc-audio-processing-2.so \
     -o "$jni_dir/libfastvoice_webrtc_aec3.so"
@@ -169,6 +171,20 @@ for abi in "${requested_abis[@]}"; do
   "$toolchain_dir/bin/llvm-strip" \
     "$jni_dir/libwebrtc-audio-processing-2.so" \
     "$jni_dir/libfastvoice_webrtc_aec3.so"
+
+  if [[ "$abi" == "arm64-v8a" ]]; then
+    for so_file in \
+      "$jni_dir/libwebrtc-audio-processing-2.so" \
+      "$jni_dir/libfastvoice_webrtc_aec3.so"; do
+      if "$toolchain_dir/bin/llvm-readelf" -lW "$so_file" \
+        | awk 'BEGIN { found = 0 } $1 == "LOAD" { found = 1; if ($NF != "0x4000") bad = 1 } END { exit (!found || bad) }'; then
+        echo "16 KB ELF alignment verified: $so_file"
+      else
+        echo "16 KB ELF alignment check failed: $so_file" >&2
+        exit 1
+      fi
+    done
+  fi
 
   echo "WebRTC core: $jni_dir/libwebrtc-audio-processing-2.so"
   echo "JNI adapter: $jni_dir/libfastvoice_webrtc_aec3.so"

@@ -12,6 +12,11 @@ class ProtocolEncoderTest {
         )
     }
 
+    @Test(expected = IllegalArgumentException::class)
+    fun helloRejectsBlankAreaId() {
+        ProtocolEncoder.hello("   ")
+    }
+
     @Test
     fun locationAndWelcomeMessagesUseExactShapes() {
         assertEquals(
@@ -27,11 +32,6 @@ class ProtocolEncoderTest {
             "{\"type\":\"welcome.play\",\"station_name\":\"藻园门站-靠近西苑地铁\"}",
             ProtocolEncoder.welcomePlay("藻园门站-靠近西苑地铁"),
         )
-    }
-
-    @Test(expected = IllegalArgumentException::class)
-    fun helloRejectsBlankAreaId() {
-        ProtocolEncoder.hello("   ")
     }
 
     @Test(expected = IllegalArgumentException::class)

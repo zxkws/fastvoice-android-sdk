@@ -15,3 +15,6 @@ buildtype = 'release'
 default_library = 'shared'
 c_args = ['-fPIC']
 cpp_args = ['-fPIC']
+# Keep ELF LOAD segments compatible with Android devices using 16 KB pages.
+c_link_args = ['-Wl,-z,max-page-size=16384']
+cpp_link_args = ['-Wl,-z,max-page-size=16384']

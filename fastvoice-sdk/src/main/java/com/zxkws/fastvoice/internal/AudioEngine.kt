@@ -688,7 +688,9 @@ internal class AudioEngine(
                         captured
                     }
                     val hasRecentRender = echoCanceller.hasRecentRender()
-                    val speechFrame = if (hasRecentRender) processed else captured
+                    // Restore AEC-processed playback/tail audio for both uplink and pre-roll.
+                    // Playback KWS remains a separate raw-MIC branch below.
+                    val uplinkFrame = CaptureFramePolicy.uplink(captured, processed, hasRecentRender)
                     if (hasRecentRender) {
                         rawEnergy += pcmEnergy(captured)
                         processedEnergy += pcmEnergy(processed)
@@ -715,14 +717,14 @@ internal class AudioEngine(
                         val kwsFrame = if (hasRecentRender) {
                             boostPcm16(captured, PLAYBACK_KWS_GAIN)
                         } else {
-                            speechFrame
+                            captured
                         }
                         if (!kwsQueue.offer(kwsFrame)) {
                             kwsQueue.poll()
                             kwsQueue.offer(kwsFrame)
                         }
                     }
-                    preRoll.addLast(speechFrame)
+                    preRoll.addLast(uplinkFrame)
                     while (preRoll.size > MAX_PRE_ROLL_FRAMES) preRoll.removeFirst()
 
                     val detectedWord = pendingWakeWord.getAndSet(null)
@@ -768,7 +770,7 @@ internal class AudioEngine(
                         ) {
                             // This frame was captured after capture.start was queued. Send it once
                             // as live audio when the caller explicitly requested zero pre-roll.
-                            sendUplink(speechFrame)
+                            sendUplink(uplinkFrame)
                         }
                         preRoll.clear()
                         if (captureRevision.get() != captureStart.revision) {
@@ -782,7 +784,7 @@ internal class AudioEngine(
                         activeCaptureRevision.get() == captureRevision.get()
                     ) {
                         preRoll.clear()
-                        sendUplink(speechFrame)
+                        sendUplink(uplinkFrame)
                     }
                 }
             } finally {
@@ -1326,8 +1328,8 @@ internal class AudioEngine(
  * Boosts little-endian signed 16-bit PCM with saturation.
  *
  * Playback KWS uses a boosted raw-MIC copy to maximize short-command recall. ASR uplink and
- * pre-roll retain the unmodified AEC output, and a KWS hit remains only a server-confirmed
- * candidate.
+ * pre-roll use unboosted AEC output during playback/tail, raw MIC otherwise.
+ * A KWS hit remains only a server-confirmed candidate.
  */
 internal fun boostPcm16(pcm: ByteArray, gain: Int): ByteArray {
     require(gain > 0) { "gain must be positive" }

@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+## 0.15.0 — 2026-09-07
+
+- 恢复播放/回声尾窗期间的 WebRTC AEC3 后上行与预卷；无近期播放参考时保留原始 MIC。KWS 继续使用独立的原始 MIC 支路，服务端残余回声和最终打断裁决保持不变。
+- 新增超时休眠提示音：仅在成功发送本地唤醒后，服务端以 `sleeping` + `reason: "inactivity_timeout"` 结束交互时播放一次本地非语音提示音；Stop、Interrupt、连接初始化和无 reason 的 sleeping 保持静默。
+- 唤醒授权改由服务端 `state=sleeping` 明确控制，`ready` 只完成协议协商，不再自行重新开启唤醒。
+- 欢迎词由服务端使用当前 Session 的必填 `area_id` 调用园区知识库生成；`playWelcome()` 不重复传园区 ID。
+- WebRTC AEC3 原生库按 16 KB ELF LOAD 对齐构建并增加构建期校验，兼容使用 16 KB page size 的 Android 设备。
+
 ## 0.14.0 — 2026-09-02
 
 - 官方 Android 客户端接入方式统一迁移到 Maven Central，发布坐标改为

@@ -1,6 +1,6 @@
 # FastVoice Android SDK 详细指南
 
-适用版本：`0.14.0`
+适用版本：`0.15.0`
 
 ## 1. 能力边界
 
@@ -34,7 +34,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("io.github.zxkws:fastvoice-android-sdk:0.14.0")
+    implementation("io.github.zxkws:fastvoice-android-sdk:0.15.0")
 }
 ```
 
@@ -87,7 +87,7 @@ SDK 不接收 token，也不发送
 | `interrupt()` | 立即停止本地播放并取消服务端当前回合 |
 | `updateLocation(stationName)` | 更新当前园区内的站点名称；新名称可触发到站播报 |
 | `clearLocation()` | 清除站点名称/坐标与对话历史，保留 Session 的 `area_id` |
-| `playWelcome(stationName?)` | 请求欢迎词；园区由当前 Session 固定 |
+| `playWelcome(stationName?)` | 请求欢迎词；园区由 `FastVoiceConfig.areaId` 固定，公园 ID 不在这里传 |
 | `close()` | 永久释放实例 |
 
 返回 `true` 只表示 SDK 已接受/发送操作，服务端确认以 `LocationAck`、
@@ -109,7 +109,7 @@ SDK 不接收 token，也不发送
 
 ```kotlin
 client.updateLocation("藻园门站-靠近西苑地铁")
-client.playWelcome("藻园门站-靠近西苑地铁")
+client.playWelcome()
 client.clearLocation()
 ```
 
@@ -140,9 +140,18 @@ getLocation = { callback ->
 - 服务端通过 `ready.wake_words` 选择 SDK 内置模型支持的唤醒词。
 - 回答播放期 KWS 检测控制词候选，候选仍由服务端 ASR 确认。
 - `interrupt()` 是宿主按钮/生命周期使用的确定性打断。
-- 上行固定为 16kHz、单声道、20ms Opus。
+- 上行为 16kHz 单声道 PCM，并按 20ms 编为 Opus 传输；存在近期播放参考时使用 WebRTC AEC3 结果，否则保留原始 MIC。预录缓冲使用相同来源。
 - 下行固定为 48kHz、单声道、20ms Opus。
-- `AudioTrack` 实际接收的 PCM 同步作为 AEC3 远端参考。
+- `AudioTrack` 实际接收的 PCM 作为客户端 AEC3 的远端参考；服务端继续处理残余回声和最终打断裁决，不替代客户端波形级回声消除。
+
+### 休眠提示音
+
+只有本地成功发送过唤醒帧，并收到带精确 `reason: "inactivity_timeout"` 的 `sleeping` 状态时，
+SDK 才播放一次本地非语音提示音。首次连接、重连、欢迎词/到站播放、打断、错误和不带
+reason 的 sleeping 都不会播放；重复 sleeping 不重播。
+重连重置状态记录。独立静态音轨不会复用服务端 playback ID 或
+发送播放报告，也不改变收音/KWS 状态。新的唤醒、收音、回答播放以及 Stop/Close 均取消它。
+本地短音不接入服务端 TTS/ASR；不经对话音轨的 AEC 参考，需真机确认不会自激或污染唤醒。
 
 ## 8. 构建和发布
 

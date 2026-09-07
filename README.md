@@ -3,8 +3,9 @@
 FastVoice 是面向 Android 的实时语音 SDK。负责 WebSocket 连接、麦克风
 采集、Opus 编解码、端侧唤醒词、流式播放、打断和断线重连。
 
-SDK 当前版本为 `0.14.0`。SDK 不调用 Android `TextToSpeech`；所有可听语音
-都来自服务端。ASR、TTS、MaxKB 和大模型均是服务端实现细节，Android 不保存
+SDK 当前发布版本为 `0.15.0`。
+SDK 不调用 Android `TextToSpeech`；所有可听语音都来自服务端，休眠提示音只是本地非语音音效。
+ASR、TTS、MaxKB 和大模型均是服务端实现细节，Android 不保存
 上游密钥，也不需要因服务端替换语音供应商而改代码。
 
 ## 环境要求
@@ -30,7 +31,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("io.github.zxkws:fastvoice-android-sdk:0.14.0")
+    implementation("io.github.zxkws:fastvoice-android-sdk:0.15.0")
 }
 ```
 
@@ -60,7 +61,7 @@ val client = FastVoiceClient(
     }
 }
 
-// 2. 启动 — hello 一次性上报 area_id，ready 后本地唤醒直接可用
+// 2. 启动 — hello 一次性上报 area_id，服务端 state=sleeping 后授权本地唤醒
 client.start()
 
 // 3. 上报位置 — 服务端自动播到站介绍
@@ -94,7 +95,7 @@ FastVoiceClient client = new FastVoiceClient(
 
 client.start();
 client.updateLocation("北一门");
-client.playWelcome(null);
+client.playWelcome();
 client.clearLocation();
 ```
 
@@ -126,7 +127,7 @@ val config = FastVoiceConfig(
 | `interrupt()` | 打断当前播放并取消服务端当前回合。 |
 | `updateLocation(stationName)` | 更新当前站点名称。服务端收到新名称后自动播放到站内容（如有）。 |
 | `clearLocation()` | 清除站点名称/坐标并重置对话历史；保留本 Session 的 `area_id`。 |
-| `playWelcome(stationName?)` | 请求服务端播放欢迎词；园区已由当前 Session 固定。 |
+| `playWelcome(stationName?)` | 请求服务端播放欢迎词；园区由 `FastVoiceConfig.areaId` 固定，公园 ID 不通过这里传。 |
 | `close()` | 永久释放实例。 |
 
 `start()`、位置和欢迎词方法返回 `Boolean`：`true` 表示 SDK 接受调用，不代表
@@ -196,6 +197,22 @@ SDK 内置 Sherpa-ONNX 端侧关键词检测（KWS），唤醒词由服务端下
 
 宿主 App 不需要管理唤醒词列表或 KWS 引擎——`start()` 之后一切自动就绪。
 
+服务端 `state` 是会话状态的唯一来源：只有 `state=sleeping` 会重新允许端侧 KWS
+发起下一次唤醒；`capture.stop`、播放结束或播放失败只处理各自的音频动作，不再推断
+会话是否已经回到可唤醒状态。
+
+### 休眠提示音
+
+仅当本地成功发送过唤醒帧，且服务端以
+`{"type":"state","value":"sleeping","reason":"inactivity_timeout"}` 结束该交互时，
+SDK 才播放一次本地休眠提示音。首次连接、重连、欢迎词/到站播放、打断、错误及不带
+`reason` 的 sleeping 帧均不播放。SDK 不自行计算追问超时。
+
+新唤醒、开始收音/服务端播放、退出 sleeping、Interrupt、Stop/Close 或断连会取消音效。
+音效不改变全局音量、不额外申请音频焦点、不停止 KWS，也不占用服务端 playback ID 或
+产生 `PlaybackFinished` 事件。音效异常仅记诊断日志，不影响语音会话。
+在静音或设备音量很低时可能听不见；音量和是否误触发唤醒仍需在实际设备验收。
+
 ## LLM 上下文行为
 
 | 状态 | 行为 |
@@ -264,8 +281,9 @@ client.updateLocation("运河广场")
 ### 欢迎词
 
 ```kotlin
-// 游客上车时播欢迎词
-client.playWelcome("南苑森林湿地公园")
+// 南苑森林湿地公园的 ID 已在创建 Client 时通过 areaId = "18" 固定
+// 游客上车时只需主动触发欢迎词，不再重复传公园名或公园 ID
+client.playWelcome()
 ```
 
 ### 纯对话（不上报位置）
@@ -301,10 +319,10 @@ SDK 自动重连。重连后：
 
 ## 固定音频协议
 
-- 上行：16 kHz 单声道 20 ms Opus（播放期间使用 WebRTC AEC3 处理后的音频）
+- 上行：16 kHz 单声道 PCM，播放及回声尾窗使用 WebRTC AEC3 输出，无近期播放时使用原始 MIC；按 20 ms 编为 Opus 传输
 - 下行：48 kHz 单声道 20 ms Opus
 - 播放期间端侧 KWS 使用放大后的原始 MIC 副本
-- AudioTrack 48 kHz PCM 同步作为 AEC3 回声参考
+- AudioTrack 实际接受的 48 kHz PCM 作为客户端 AEC3 参考；预录缓冲与实时上行使用相同的音频来源，KWS 分支独立
 
 ## USB 调试
 
