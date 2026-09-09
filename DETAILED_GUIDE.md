@@ -1,6 +1,6 @@
 # FastVoice Android SDK 详细指南
 
-适用版本：`0.15.0`
+适用版本：`0.16.0`
 
 ## 1. 能力边界
 
@@ -34,7 +34,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("io.github.zxkws:fastvoice-android-sdk:0.15.0")
+    implementation("io.github.zxkws:fastvoice-android-sdk:0.16.0")
 }
 ```
 
@@ -85,13 +85,14 @@ SDK 不接收 token，也不发送
 | `start()` | 启动音频和 WebSocket；`hello` 一次性发送 `area_id`，收到 `ready` 后开放唤醒 |
 | `stop()` | 停止并允许后续重启 |
 | `interrupt()` | 立即停止本地播放并取消服务端当前回合 |
-| `updateLocation(stationName)` | 更新当前园区内的站点名称；新名称可触发到站播报 |
+| `updateLocation(stationName)` | 同步当前所选目的地；不会自动播放，也不表示真实物理位置 |
+| `playDestination(stationName)` | 显式选择并播放一个目的地介绍；重复调用可重播 |
 | `clearLocation()` | 清除站点名称/坐标与对话历史，保留 Session 的 `area_id` |
 | `playWelcome(stationName?)` | 请求欢迎词；园区由 `FastVoiceConfig.areaId` 固定，公园 ID 不在这里传 |
 | `close()` | 永久释放实例 |
 
 返回 `true` 只表示 SDK 已接受/发送操作，服务端确认以 `LocationAck`、
-`WelcomeAck` 或 `Error` 为准。
+`DestinationAck`、`WelcomeAck` 或 `Error` 为准。
 
 ## 5. 事件
 
@@ -99,7 +100,7 @@ SDK 不接收 token，也不发送
 
 - `StateChanged`：原始服务状态。
 - `Transcript`：`role/text/final` 按服务端原值传递。
-- `LocationAck` / `WelcomeAck`。
+- `LocationAck` / `DestinationAck` / `WelcomeAck`。
 - `PlaybackFinished` / `PlaybackFailed`：物理播放终态。
 - `Error`：`scope/ref/rev/code/message/recoverable/fallbackText` 按原值传递。
 
@@ -109,6 +110,7 @@ SDK 不接收 token，也不发送
 
 ```kotlin
 client.updateLocation("藻园门站-靠近西苑地铁")
+client.playDestination("藻园门站-靠近西苑地铁")
 client.playWelcome()
 client.clearLocation()
 ```
@@ -117,6 +119,10 @@ client.clearLocation()
 都在第一条 `hello` 里发送同一个 `area_id`；服务端 `ready` 返回后立即可以唤醒，
 不再存在 area ack 门禁。`clearLocation()` 清掉站点名称/坐标和对话历史，但 Session 的
 `area_id` 继续保留。
+
+`stationName` 当前只表示宿主所选目的地。SDK 在重连后会用 `location.update` 恢复这个
+snapshot，但不会自动发送 `destination.play`，所以不会因重连重复讲解。`areaId` 只限定
+服务园区/知识范围；经纬度当前只供天气能力使用，这三者都不能单独证明真实物理位置。
 
 同一订单/Client 不支持切换区域。业务订单的区域变化时，关闭旧 Client 并使用新的
 `areaId` 创建新 Client。知识库隔离由服务端把 `area_id` 作为 MaxKB 工作流的同名输入后，在
@@ -147,7 +153,7 @@ getLocation = { callback ->
 ### 休眠提示音
 
 只有本地成功发送过唤醒帧，并收到带精确 `reason: "inactivity_timeout"` 的 `sleeping` 状态时，
-SDK 才播放一次本地非语音提示音。首次连接、重连、欢迎词/到站播放、打断、错误和不带
+SDK 才播放一次本地非语音提示音。首次连接、重连、欢迎词/目的地讲解、打断、错误和不带
 reason 的 sleeping 都不会播放；重复 sleeping 不重播。
 重连重置状态记录。独立静态音轨不会复用服务端 playback ID 或
 发送播放报告，也不改变收音/KWS 状态。新的唤醒、收音、回答播放以及 Stop/Close 均取消它。

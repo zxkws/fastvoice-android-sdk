@@ -28,6 +28,12 @@ public class PublicApiJavaTest {
         );
         assertEquals(
             boolean.class,
+            FastVoiceClient.class.getMethod(
+                "playDestination", String.class
+            ).getReturnType()
+        );
+        assertEquals(
+            boolean.class,
             FastVoiceClient.class.getMethod("clearLocation").getReturnType()
         );
         assertEquals(
@@ -44,6 +50,7 @@ public class PublicApiJavaTest {
         );
         listener.onEvent(new FastVoiceEvent.StateChanged(FastVoiceState.LISTENING));
         listener.onEvent(new FastVoiceEvent.LocationAck("station_1907"));
+        listener.onEvent(new FastVoiceEvent.DestinationAck("station_1907"));
         listener.onEvent(new FastVoiceEvent.WelcomeAck(null));
     }
 }

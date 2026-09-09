@@ -78,6 +78,7 @@ class PublicModelsTest {
             FastVoiceEvent.LocationAck("station_1907"),
             FastVoiceEvent.LocationAck("station_1907"),
         )
+        assertEquals("station_1907", FastVoiceEvent.DestinationAck("station_1907").stationName)
         assertEquals(null, FastVoiceEvent.WelcomeAck(null).stationName)
         assertEquals(
             "content-1",

@@ -18,7 +18,7 @@ class ProtocolEncoderTest {
     }
 
     @Test
-    fun locationAndWelcomeMessagesUseExactShapes() {
+    fun locationDestinationAndWelcomeMessagesUseExactShapes() {
         assertEquals(
             "{\"type\":\"location.update\",\"station_name\":\"藻园门站-靠近西苑地铁\"}",
             ProtocolEncoder.locationUpdate("藻园门站-靠近西苑地铁"),
@@ -29,6 +29,10 @@ class ProtocolEncoderTest {
         )
         assertEquals("{\"type\":\"location.clear\"}", ProtocolEncoder.locationClear())
         assertEquals(
+            "{\"type\":\"destination.play\",\"station_name\":\"藻园门站-靠近西苑地铁\"}",
+            ProtocolEncoder.destinationPlay("藻园门站-靠近西苑地铁"),
+        )
+        assertEquals(
             "{\"type\":\"welcome.play\",\"station_name\":\"藻园门站-靠近西苑地铁\"}",
             ProtocolEncoder.welcomePlay("藻园门站-靠近西苑地铁"),
         )
@@ -37,6 +41,11 @@ class ProtocolEncoderTest {
     @Test(expected = IllegalArgumentException::class)
     fun locationUpdateRejectsEmptyPayload() {
         ProtocolEncoder.locationUpdate(null)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun destinationPlayRejectsBlankStationName() {
+        ProtocolEncoder.destinationPlay("   ")
     }
 
     @Test

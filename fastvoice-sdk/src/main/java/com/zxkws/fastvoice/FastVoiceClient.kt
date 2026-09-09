@@ -232,7 +232,7 @@ class FastVoiceClient @JvmOverloads constructor(
     }
 
     /**
-     * Updates the device's current location context.
+     * Synchronizes the host-selected destination without starting narration.
      *
      * `true` means the SDK sent (or will retry) the update; only
      * [FastVoiceEvent.LocationAck] means the server accepted it.
@@ -252,6 +252,19 @@ class FastVoiceClient @JvmOverloads constructor(
                     locationSnapshot.longitude,
                 ),
             )
+        }
+    }
+
+    /** Explicitly selects and narrates one destination. Repeated calls replay it. */
+    fun playDestination(stationName: String): Boolean {
+        check(!closed.get()) { "FastVoiceClient is closed" }
+        val normalizedStationName = stationName.trim()
+        require(normalizedStationName.isNotEmpty()) { "stationName must not be blank" }
+        if (!started.get()) return false
+        resetSleepCue()
+        return synchronized(locationLock) {
+            locationSnapshot = locationSnapshot.copy(stationName = normalizedStationName)
+            sendIfReady(ProtocolEncoder.destinationPlay(normalizedStationName))
         }
     }
 
@@ -294,7 +307,8 @@ class FastVoiceClient @JvmOverloads constructor(
 
     /**
      * Requests welcome playback for the area already fixed by [FastVoiceConfig.areaId].
-     * [stationName] is optional station metadata only; it does not select the park/area.
+     * [stationName] is optional selected-destination metadata only; it does not select the park/area
+     * and does not represent the device's physical position.
      */
     @JvmOverloads
     fun playWelcome(stationName: String? = null): Boolean {
@@ -404,6 +418,7 @@ class FastVoiceClient @JvmOverloads constructor(
             "state" -> handleState(message)
             "transcript" -> handleTranscript(message)
             "location.ack" -> handleLocationAck(message)
+            "destination.ack" -> handleDestinationAck(message)
             "welcome.ack" -> handleWelcomeAck(message)
             "playback.start" -> handlePlaybackStart(message)
             "playback.end" -> handlePlaybackEnd(message)
@@ -581,6 +596,19 @@ class FastVoiceClient @JvmOverloads constructor(
             return
         }
         emit(FastVoiceEvent.LocationAck(stationName))
+    }
+
+    private fun handleDestinationAck(message: JSONObject) {
+        if (!message.hasExactFields(setOf("type", "station_name"))) {
+            terminateProtocol("invalid_destination_ack")
+            return
+        }
+        val stationName = message.strictString("station_name")
+        if (stationName.isNullOrBlank()) {
+            terminateProtocol("invalid_destination_ack")
+            return
+        }
+        emit(FastVoiceEvent.DestinationAck(stationName))
     }
 
     private fun handleWelcomeAck(message: JSONObject) {

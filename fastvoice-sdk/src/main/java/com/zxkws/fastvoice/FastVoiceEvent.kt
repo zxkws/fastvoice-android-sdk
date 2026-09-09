@@ -39,6 +39,8 @@ sealed class FastVoiceEvent {
 
     data class LocationAck(val stationName: String?) : FastVoiceEvent()
 
+    data class DestinationAck(val stationName: String) : FastVoiceEvent()
+
     data class WelcomeAck(val stationName: String?) : FastVoiceEvent()
 
     data class PlaybackFinished(

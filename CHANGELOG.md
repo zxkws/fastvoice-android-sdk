@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.16.0 — 2026-09-09
+
+- 破坏性协议调整：`updateLocation(stationName)` 只同步所选目的地，不再隐式触发讲解；
+  新增 `playDestination(stationName)` / `destination.play` / `DestinationAck` 显式触发目的地介绍。
+  SDK 重连仍恢复 `location.update` snapshot，但不会因此重复播放同一目的地。
+- 明确业务语义：`stationName` 是所选目的地，`areaId` 是服务园区/知识范围，二者都不是
+  真实物理位置证明；GPS 当前只用于天气。
 
 ## 0.15.0 — 2026-09-07
 

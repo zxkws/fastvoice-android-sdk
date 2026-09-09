@@ -3,7 +3,7 @@
 FastVoice 是面向 Android 的实时语音 SDK。负责 WebSocket 连接、麦克风
 采集、Opus 编解码、端侧唤醒词、流式播放、打断和断线重连。
 
-SDK 当前发布版本为 `0.15.0`。
+SDK 当前发布版本为 `0.16.0`。
 SDK 不调用 Android `TextToSpeech`；所有可听语音都来自服务端，休眠提示音只是本地非语音音效。
 ASR、TTS、MaxKB 和大模型均是服务端实现细节，Android 不保存
 上游密钥，也不需要因服务端替换语音供应商而改代码。
@@ -31,7 +31,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("io.github.zxkws:fastvoice-android-sdk:0.15.0")
+    implementation("io.github.zxkws:fastvoice-android-sdk:0.16.0")
 }
 ```
 
@@ -54,6 +54,7 @@ val client = FastVoiceClient(
         is FastVoiceEvent.StateChanged -> updateState(event.state.value)
         is FastVoiceEvent.Transcript  -> showTranscript(event.text)
         is FastVoiceEvent.LocationAck -> log("位置已确认")
+        is FastVoiceEvent.DestinationAck -> log("目的地讲解已确认")
         is FastVoiceEvent.WelcomeAck  -> log("欢迎词已确认")
         is FastVoiceEvent.PlaybackFinished -> log("播放完成")
         is FastVoiceEvent.PlaybackFailed   -> log("播放失败: ${event.code}")
@@ -64,11 +65,11 @@ val client = FastVoiceClient(
 // 2. 启动 — hello 一次性上报 area_id，服务端 state=sleeping 后授权本地唤醒
 client.start()
 
-// 3. 上报位置 — 服务端自动播到站介绍
+// 3. 同步宿主所选目的地；不会自动播放
 client.updateLocation("藻园门站-靠近西苑地铁")
 
-// 4. 到下一站
-client.updateLocation("1907站")
+// 4. 明确需要讲解这个目的地时再调用
+client.playDestination("藻园门站-靠近西苑地铁")
 
 // 5. 播放欢迎词（主动触发）
 client.playWelcome()
@@ -95,6 +96,7 @@ FastVoiceClient client = new FastVoiceClient(
 
 client.start();
 client.updateLocation("北一门");
+client.playDestination("北一门");
 client.playWelcome();
 client.clearLocation();
 ```
@@ -125,12 +127,13 @@ val config = FastVoiceConfig(
 | `start(): Boolean` | 启动连接和音频。SDK 在 `hello` 一次性上报必填 `area_id`，收到 `ready` 后开放唤醒。 |
 | `stop()` | 断开连接，停止音频。可重新 `start()`。 |
 | `interrupt()` | 打断当前播放并取消服务端当前回合。 |
-| `updateLocation(stationName)` | 更新当前站点名称。服务端收到新名称后自动播放到站内容（如有）。 |
+| `updateLocation(stationName)` | 同步宿主当前所选目的地；不会自动播放。`stationName` 不代表真实物理位置。 |
+| `playDestination(stationName)` | 显式选择并播放一个目的地介绍；重复调用同一名称表示明确重播。 |
 | `clearLocation()` | 清除站点名称/坐标并重置对话历史；保留本 Session 的 `area_id`。 |
 | `playWelcome(stationName?)` | 请求服务端播放欢迎词；园区由 `FastVoiceConfig.areaId` 固定，公园 ID 不通过这里传。 |
 | `close()` | 永久释放实例。 |
 
-`start()`、位置和欢迎词方法返回 `Boolean`：`true` 表示 SDK 接受调用，不代表
+`start()`、位置、目的地讲解和欢迎词方法返回 `Boolean`：`true` 表示 SDK 接受调用，不代表
 服务端已确认。服务端结果通过事件回调返回。
 
 ## 事件
@@ -140,6 +143,7 @@ val config = FastVoiceConfig(
 | `StateChanged(state)` | 状态变化：sleeping / listening / recognizing / generating / speaking / prompting |
 | `Transcript(role, text, final)` | 语音转文字（role=user）或回答文字（role=assistant） |
 | `LocationAck` | 服务端确认位置上报 |
+| `DestinationAck(stationName)` | 服务端确认显式目的地讲解请求 |
 | `WelcomeAck` | 服务端确认欢迎词请求 |
 | `PlaybackFinished(playbackId, contentId)` | 音频物理播放完成 |
 | `PlaybackFailed(playbackId, contentId, code)` | 音频播放失败 |
@@ -168,7 +172,8 @@ getLocation = { callback ->
 匿名函数通过 callback 返回 `{"latitude":39.81,"longitude":116.37}` 或 `null`。
 `area_id` 不由定位回调返回，而是来自必填的 `FastVoiceConfig.areaId`。SDK 在连接就绪
 和每次唤醒时自动调用、解析和上传坐标；坐标刷新帧只包含经纬度，不会重复携带
-`area_id`，也不会重复触发到站播报。宿主通常无需手动调用 `updateCoordinates()`。
+`area_id`，也不会触发目的地讲解。当前 GPS 只供服务端天气能力使用，不能用于推断
+所选目的地或真实到站状态。宿主通常无需手动调用 `updateCoordinates()`。
 
 ## 园区与知识库范围
 
@@ -178,7 +183,8 @@ getLocation = { callback ->
 选择当前园区的 `knowledge_ids`。
 
 同一实例不支持运行中切换园区。订单换园区时应关闭旧 `FastVoiceClient`，用新的
-`areaId` 创建新实例。`updateLocation()` 只负责当前园区里的站点变化。
+`areaId` 创建新实例。`areaId` 只表示服务园区/知识范围，不证明车辆物理位置。
+`updateLocation()` 只同步所选目的地；`playDestination()` 才显式启动目的地讲解。
 
 ## 唤醒词机制
 
@@ -205,7 +211,7 @@ SDK 内置 Sherpa-ONNX 端侧关键词检测（KWS），唤醒词由服务端下
 
 仅当本地成功发送过唤醒帧，且服务端以
 `{"type":"state","value":"sleeping","reason":"inactivity_timeout"}` 结束该交互时，
-SDK 才播放一次本地休眠提示音。首次连接、重连、欢迎词/到站播放、打断、错误及不带
+SDK 才播放一次本地休眠提示音。首次连接、重连、欢迎词/目的地讲解、打断、错误及不带
 `reason` 的 sleeping 帧均不播放。SDK 不自行计算追问超时。
 
 新唤醒、开始收音/服务端播放、退出 sleeping、Interrupt、Stop/Close 或断连会取消音效。
@@ -218,8 +224,9 @@ SDK 才播放一次本地休眠提示音。首次连接、重连、欢迎词/到
 | 状态 | 行为 |
 |------|------|
 | `FastVoiceConfig.areaId = "18"` | 整个 WebSocket Session 固定为区域 18，知识请求都发送同一个 `form_data.area_id` |
-| 已调用 `updateLocation("北一门")` | 在当前园区隔离范围内附加站点上下文，并触发新站点到站讲解 |
-| 仅 GPS 刷新 | 只更新坐标，不改变园区或站点，不重复触发到站讲解 |
+| 已调用 `updateLocation("北一门")` | 把“北一门”保存为所选目的地上下文；不自动播放，也不证明已经到达 |
+| 已调用 `playDestination("北一门")` | 在当前园区隔离范围内显式查询并播放“北一门”目的地介绍 |
+| 仅 GPS 刷新 | 只更新天气使用的坐标，不改变园区或所选目的地，不触发目的地讲解 |
 | 调用 `clearLocation()` 后 | 清除站点名称/坐标和旧对话，但 Session 的 `area_id` 不变 |
 | 订单切换到新区域 | 关闭旧 Client，以新的 `areaId` 创建新 Client / 新 WebSocket Session |
 
@@ -233,15 +240,14 @@ SDK 才播放一次本地休眠提示音。首次连接、重连、欢迎词/到
 ← {"type":"hello","wake":true,"area_id":"18"}
 → {"type":"ready","connection_id":"c1","wake_words":["咘嘀"]}
 
-// 位置上报 → 自动播到站介绍
+// 同步所选目的地/坐标；不会自动播放
 ← {"type":"location.update","station_name":"藻园门站-靠近西苑地铁","latitude":39.81,"longitude":116.37}
 → {"type":"location.ack","station_name":"藻园门站-靠近西苑地铁"}
-→ （服务端自动播报该站点介绍音频）
 
-// 到下一站
-← {"type":"location.update","station_name":"1907站"}
-→ {"type":"location.ack","station_name":"1907站"}
-→ （自动播报）
+// 显式请求目的地讲解
+← {"type":"destination.play","station_name":"藻园门站-靠近西苑地铁"}
+→ {"type":"destination.ack","station_name":"藻园门站-靠近西苑地铁"}
+→ （服务端查询当前 area 的知识并播放该目的地介绍）
 
 // 离开（清除位置 + 对话历史）
 ← {"type":"location.clear"}
@@ -265,17 +271,19 @@ SDK 才播放一次本地休眠提示音。首次连接、重连、欢迎词/到
 
 ## 使用场景
 
-### 导览车到站播报
+### 所选目的地讲解
 
 ```kotlin
-// 到北一门
+// 宿主业务先同步当前所选目的地
 client.updateLocation("北一门")
-// → 服务端自动查知识库，播放北一门介绍
-// → 播完后游客可以唤醒提问："咘嘀，这里有什么好玩的？"
 
-// 到下一站
+// 真正需要播放介绍时显式触发
+client.playDestination("北一门")
+// → 服务端在当前 area 的知识范围内查询并播放北一门介绍
+
+// 切换所选目的地本身不自动播放
 client.updateLocation("运河广场")
-// → 自动播运河广场介绍
+client.playDestination("运河广场")
 ```
 
 ### 欢迎词
@@ -305,7 +313,8 @@ client.clearLocation()
 ## 断线重连
 
 SDK 自动重连。重连后：
-- 如果之前上报过位置，自动重发 `location.update`
+- 如果之前同步过目的地/坐标，自动重发 `location.update` 恢复状态
+- 不会自动发送 `destination.play`，因此不会因为重连重复讲解
 - 唤醒词立即恢复可用
 - 不需要宿主做任何操作
 

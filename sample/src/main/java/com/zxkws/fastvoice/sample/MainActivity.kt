@@ -44,6 +44,7 @@ class MainActivity : Activity() {
     private lateinit var restoreEndpointButton: Button
     private lateinit var interruptButton: Button
     private lateinit var updateLocationButton: Button
+    private lateinit var destinationButton: Button
     private lateinit var welcomeButton: Button
     private lateinit var clearLocationButton: Button
 
@@ -52,6 +53,7 @@ class MainActivity : Activity() {
     private lateinit var replyValue: TextView
     private lateinit var errorValue: TextView
     private lateinit var locationResultValue: TextView
+    private lateinit var destinationResultValue: TextView
     private lateinit var welcomeResultValue: TextView
     private lateinit var playbackResultValue: TextView
 
@@ -70,6 +72,8 @@ class MainActivity : Activity() {
             is FastVoiceEvent.Error -> renderError(event.error.toString())
             is FastVoiceEvent.LocationAck ->
                 runOnUiThread { locationResultValue.text = event.toString() }
+            is FastVoiceEvent.DestinationAck ->
+                runOnUiThread { destinationResultValue.text = event.toString() }
             is FastVoiceEvent.WelcomeAck ->
                 runOnUiThread { welcomeResultValue.text = event.toString() }
             is FastVoiceEvent.PlaybackFinished ->
@@ -92,6 +96,7 @@ class MainActivity : Activity() {
         restoreEndpointButton.setOnClickListener { clearSavedEndpoint() }
         interruptButton.setOnClickListener { voiceClient?.interrupt() }
         updateLocationButton.setOnClickListener { updateSampleLocation() }
+        destinationButton.setOnClickListener { playSampleDestination() }
         welcomeButton.setOnClickListener { playSampleWelcome() }
         clearLocationButton.setOnClickListener { voiceClient?.clearLocation() }
     }
@@ -138,6 +143,15 @@ class MainActivity : Activity() {
             return
         }
         voiceClient?.updateLocation(stationName)
+    }
+
+    private fun playSampleDestination() {
+        val stationName = stationNameInput.text.toString().trim()
+        if (stationName.isBlank()) {
+            renderError("stationName is required")
+            return
+        }
+        voiceClient?.playDestination(stationName)
     }
 
     private fun getSampleLocationAsync(callback: (JSONObject?) -> Unit) {
@@ -211,7 +225,7 @@ class MainActivity : Activity() {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
         }
         areaInput = input("area id").apply { setText("18") }
-        stationNameInput = input("station name (optional)")
+        stationNameInput = input("selected destination (optional)")
         latitudeInput = input("latitude").apply {
             setText("39.81")
             inputType = InputType.TYPE_CLASS_NUMBER or
@@ -227,7 +241,8 @@ class MainActivity : Activity() {
         stopButton = button("Stop")
         restoreEndpointButton = button("Clear endpoint")
         interruptButton = button("Interrupt")
-        updateLocationButton = button("Update location")
+        updateLocationButton = button("Sync destination")
+        destinationButton = button("Play destination")
         welcomeButton = button("Play welcome")
         clearLocationButton = button("Clear location")
 
@@ -236,6 +251,7 @@ class MainActivity : Activity() {
         replyValue = output()
         errorValue = output()
         locationResultValue = output()
+        destinationResultValue = output()
         welcomeResultValue = output()
         playbackResultValue = output()
 
@@ -252,14 +268,16 @@ class MainActivity : Activity() {
             addView(longitudeInput)
             addView(label("Area ID (fixed for this session)"))
             addView(areaInput)
-            addView(label("Station name"))
+            addView(label("Selected destination"))
             addView(stationNameInput)
-            addView(buttonRow(updateLocationButton, welcomeButton, clearLocationButton))
+            addView(buttonRow(updateLocationButton, destinationButton))
+            addView(buttonRow(welcomeButton, clearLocationButton))
             addView(rawOutput("state", stateValue, gap))
             addView(rawOutput("asr", asrValue, gap))
             addView(rawOutput("reply", replyValue, gap))
             addView(rawOutput("error", errorValue, gap))
             addView(rawOutput("locationResult", locationResultValue, gap))
+            addView(rawOutput("destinationResult", destinationResultValue, gap))
             addView(rawOutput("welcomeResult", welcomeResultValue, gap))
             addView(rawOutput("playbackResult", playbackResultValue, gap))
         }

@@ -45,6 +45,18 @@ internal object ProtocolEncoder {
     )
 
     @JvmSynthetic
+    fun destinationPlay(stationName: String): String {
+        val normalizedStationName = stationName.trim()
+        require(normalizedStationName.isNotEmpty()) { "stationName must not be blank" }
+        return JsonEncoder.encode(
+            linkedMapOf(
+                "type" to "destination.play",
+                "station_name" to normalizedStationName,
+            ),
+        )
+    }
+
+    @JvmSynthetic
     fun welcomePlay(stationName: String?): String = JsonEncoder.encode(
         linkedMapOf<String, Any?>("type" to "welcome.play").apply {
             stationName?.trim()?.takeIf(String::isNotEmpty)?.let { put("station_name", it) }
