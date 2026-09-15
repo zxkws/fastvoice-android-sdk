@@ -1,6 +1,6 @@
 # FastVoice Android SDK 详细指南
 
-适用版本：`0.16.0`
+适用版本：`0.17.0`
 
 ## 1. 能力边界
 
@@ -34,7 +34,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("io.github.zxkws:fastvoice-android-sdk:0.16.0")
+    implementation("io.github.zxkws:fastvoice-android-sdk:0.17.0")
 }
 ```
 
@@ -85,14 +85,19 @@ SDK 不接收 token，也不发送
 | `start()` | 启动音频和 WebSocket；`hello` 一次性发送 `area_id`，收到 `ready` 后开放唤醒 |
 | `stop()` | 停止并允许后续重启 |
 | `interrupt()` | 立即停止本地播放并取消服务端当前回合 |
-| `updateLocation(stationName)` | 同步当前所选目的地；不会自动播放，也不表示真实物理位置 |
+| `updateLocation(stationName)` | 同步当前所选目的地；可在 `start()` 前写入，`ready` 后自动补发。不会自动播放，也不表示真实物理位置 |
 | `playDestination(stationName)` | 显式选择并播放一个目的地介绍；重复调用可重播 |
-| `clearLocation()` | 清除站点名称/坐标与对话历史，保留 Session 的 `area_id` |
+| `clearLocation()` | 清除 SDK 缓存的站点名称/坐标；已连接时同时让服务端重置对应上下文，保留 Session 的 `area_id` |
 | `playWelcome(stationName?)` | 请求欢迎词；园区由 `FastVoiceConfig.areaId` 固定，公园 ID 不在这里传 |
 | `close()` | 永久释放实例 |
 
 返回 `true` 只表示 SDK 已接受/发送操作，服务端确认以 `LocationAck`、
 `DestinationAck`、`WelcomeAck` 或 `Error` 为准。
+
+`updateLocation()` / `updateCoordinates()` / `clearLocation()` 恒返回 `true`：即使尚未
+`start()`，SDK 也会保留最新的本地快照，并在连接 `ready` 后补发。需要判断客户端是否已
+启动请读 `isStarted`，不要依赖这些方法的返回值。播放类动作（`playDestination()` /
+`playWelcome()`）不会离线排队，未启动时返回 `false`。
 
 ## 5. 事件
 
@@ -123,6 +128,10 @@ client.clearLocation()
 `stationName` 当前只表示宿主所选目的地。SDK 在重连后会用 `location.update` 恢复这个
 snapshot，但不会自动发送 `destination.play`，所以不会因重连重复讲解。`areaId` 只限定
 服务园区/知识范围；经纬度当前只供天气能力使用，这三者都不能单独证明真实物理位置。
+
+宿主显式调用 `updateCoordinates()` 时，SDK 把该坐标视为比已经在途的旧 `getLocation`
+请求更新，并丢弃随后迟到的旧回调。因此不要同时使用 `getLocation` 回调和周期性
+`updateCoordinates()`：两者并用会让唤醒时发起的 provider 请求持续被作废。二选一即可。
 
 同一订单/Client 不支持切换区域。业务订单的区域变化时，关闭旧 Client 并使用新的
 `areaId` 创建新 Client。知识库隔离由服务端把 `area_id` 作为 MaxKB 工作流的同名输入后，在

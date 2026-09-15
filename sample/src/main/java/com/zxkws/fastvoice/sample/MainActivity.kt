@@ -221,11 +221,18 @@ class MainActivity : Activity() {
         val gap = (8 * density).toInt()
 
         endpointInput = input("ws://host:8100/ws").apply {
-            setText(getSharedPreferences(SETTINGS_NAME, MODE_PRIVATE).getString(ENDPOINT_KEY, ""))
+            setText(
+                getSharedPreferences(SETTINGS_NAME, MODE_PRIVATE).getString(
+                    ENDPOINT_KEY,
+                    "ws://127.0.0.1:8100/ws",
+                )
+            )
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
         }
         areaInput = input("area id").apply { setText("18") }
-        stationNameInput = input("selected destination (optional)")
+        stationNameInput = input("selected destination (optional)").apply {
+            setText("燕景台")
+        }
         latitudeInput = input("latitude").apply {
             setText("39.81")
             inputType = InputType.TYPE_CLASS_NUMBER or

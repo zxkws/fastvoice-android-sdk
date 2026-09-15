@@ -3,7 +3,7 @@
 FastVoice 是面向 Android 的实时语音 SDK。负责 WebSocket 连接、麦克风
 采集、Opus 编解码、端侧唤醒词、流式播放、打断和断线重连。
 
-SDK 当前发布版本为 `0.16.0`。
+SDK 当前发布版本为 `0.17.0`。
 SDK 不调用 Android `TextToSpeech`；所有可听语音都来自服务端，休眠提示音只是本地非语音音效。
 ASR、TTS、MaxKB 和大模型均是服务端实现细节，Android 不保存
 上游密钥，也不需要因服务端替换语音供应商而改代码。
@@ -31,7 +31,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("io.github.zxkws:fastvoice-android-sdk:0.16.0")
+    implementation("io.github.zxkws:fastvoice-android-sdk:0.17.0")
 }
 ```
 
@@ -127,14 +127,15 @@ val config = FastVoiceConfig(
 | `start(): Boolean` | 启动连接和音频。SDK 在 `hello` 一次性上报必填 `area_id`，收到 `ready` 后开放唤醒。 |
 | `stop()` | 断开连接，停止音频。可重新 `start()`。 |
 | `interrupt()` | 打断当前播放并取消服务端当前回合。 |
-| `updateLocation(stationName)` | 同步宿主当前所选目的地；不会自动播放。`stationName` 不代表真实物理位置。 |
+| `updateLocation(stationName)` | 同步宿主当前所选目的地；可在 `start()` 前写入最新状态，连接 `ready` 后自动补发；不会自动播放。 |
 | `playDestination(stationName)` | 显式选择并播放一个目的地介绍；重复调用同一名称表示明确重播。 |
-| `clearLocation()` | 清除站点名称/坐标并重置对话历史；保留本 Session 的 `area_id`。 |
+| `clearLocation()` | 清除 SDK 缓存的站点名称/坐标；已连接时同时让服务端重置对应上下文，保留本 Session 的 `area_id`。 |
 | `playWelcome(stationName?)` | 请求服务端播放欢迎词；园区由 `FastVoiceConfig.areaId` 固定，公园 ID 不通过这里传。 |
 | `close()` | 永久释放实例。 |
 
-`start()`、位置、目的地讲解和欢迎词方法返回 `Boolean`：`true` 表示 SDK 接受调用，不代表
-服务端已确认。服务端结果通过事件回调返回。
+`start()`、位置、目的地讲解和欢迎词方法返回 `Boolean`。对 `updateLocation()` /
+`updateCoordinates()` / `clearLocation()`，`true` 表示 SDK 已接受本地状态；即使尚未连接也会保留
+最新快照，连接 `ready` 后补发。服务端是否接受仍以 `LocationAck` 为准。播放类动作不会离线排队。
 
 ## 事件
 
@@ -173,7 +174,7 @@ getLocation = { callback ->
 `area_id` 不由定位回调返回，而是来自必填的 `FastVoiceConfig.areaId`。SDK 在连接就绪
 和每次唤醒时自动调用、解析和上传坐标；坐标刷新帧只包含经纬度，不会重复携带
 `area_id`，也不会触发目的地讲解。当前 GPS 只供服务端天气能力使用，不能用于推断
-所选目的地或真实到站状态。宿主通常无需手动调用 `updateCoordinates()`。
+所选目的地或真实到站状态。宿主通常无需手动调用 `updateCoordinates()`。如果宿主显式调用它，SDK 会把该坐标视为比已经在途的旧 `getLocation` 请求更新，并丢弃随后迟到的旧回调，避免旧坐标覆盖新坐标。
 
 ## 园区与知识库范围
 

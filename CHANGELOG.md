@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.17.0 — 2026-09-15
+
+- `updateLocation()` / `updateCoordinates()` / `clearLocation()` 不再要求已 `start()`。
+  未连接时写入的最新位置快照会被保留，并在连接 `ready` 后自动补发；播放类动作
+  （`playDestination()` / `playWelcome()`）保持不排队，仍要求已启动。
+- 行为变更：上述三个方法现在恒返回 `true`（仅表示 SDK 已接受本地状态），不再用
+  `false` 表示未启动。依赖该返回值判断启动状态的宿主代码需要改用 `isStarted`。
+  服务端是否接受仍以 `LocationAck` 为准。
+- 修复宿主显式 `updateCoordinates()` 被在途 `getLocation` 旧回调覆盖的问题：显式调用
+  视为更新，随后迟到的旧 provider 回调会被丢弃。注意宿主不应同时使用 `getLocation`
+  回调和周期性 `updateCoordinates()`，否则 provider 请求会持续被作废。
+
 ## 0.16.0 — 2026-09-09
 
 - 破坏性协议调整：`updateLocation(stationName)` 只同步所选目的地，不再隐式触发讲解；

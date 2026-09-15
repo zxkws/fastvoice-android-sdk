@@ -234,25 +234,28 @@ class FastVoiceClient @JvmOverloads constructor(
     /**
      * Synchronizes the host-selected destination without starting narration.
      *
-     * `true` means the SDK sent (or will retry) the update; only
-     * [FastVoiceEvent.LocationAck] means the server accepted it.
+     * `true` means the SDK accepted the state locally. If the socket is not ready yet,
+     * the latest snapshot is sent after `ready`; only [FastVoiceEvent.LocationAck]
+     * confirms that the server accepted it.
      */
     fun updateLocation(stationName: String): Boolean {
         check(!closed.get()) { "FastVoiceClient is closed" }
         val normalizedStationName = stationName.trim()
         require(normalizedStationName.isNotEmpty()) { "stationName must not be blank" }
-        if (!started.get()) return false
         resetSleepCue()
-        return synchronized(locationLock) {
+        synchronized(locationLock) {
             locationSnapshot = locationSnapshot.copy(stationName = normalizedStationName)
-            sendIfReady(
-                ProtocolEncoder.locationUpdate(
-                    locationSnapshot.stationName,
-                    locationSnapshot.latitude,
-                    locationSnapshot.longitude,
-                ),
-            )
+            if (started.get()) {
+                sendIfReady(
+                    ProtocolEncoder.locationUpdate(
+                        locationSnapshot.stationName,
+                        locationSnapshot.latitude,
+                        locationSnapshot.longitude,
+                    ),
+                )
+            }
         }
+        return true
     }
 
     /** Explicitly selects and narrates one destination. Repeated calls replay it. */
@@ -268,7 +271,10 @@ class FastVoiceClient @JvmOverloads constructor(
         }
     }
 
-    /** Updates the coordinates used by server-side location services such as weather. */
+    /**
+     * Updates the coordinates used by server-side location services such as weather.
+     * A direct host update is newer than any already-running `getLocation` callback.
+     */
     fun updateCoordinates(latitude: Double, longitude: Double): Boolean {
         check(!closed.get()) { "FastVoiceClient is closed" }
         require(latitude.isFinite() && latitude in -90.0..90.0) {
@@ -277,32 +283,33 @@ class FastVoiceClient @JvmOverloads constructor(
         require(longitude.isFinite() && longitude in -180.0..180.0) {
             "longitude must be finite and within -180..180"
         }
-        if (!started.get()) return false
         resetSleepCue()
-        return synchronized(locationLock) {
+        synchronized(locationLock) {
+            // Invalidate a slower provider request that started before this explicit update.
+            locationRequestEpoch.incrementAndGet()
             locationSnapshot = locationSnapshot.copy(
                 latitude = latitude,
                 longitude = longitude,
             )
-            sendIfReady(
-                ProtocolEncoder.locationUpdate(
-                    null,
-                    latitude,
-                    longitude,
-                ),
-            )
+            if (started.get()) {
+                sendIfReady(ProtocolEncoder.locationUpdate(null, latitude, longitude))
+            }
         }
+        return true
     }
 
+    /** Clears locally cached destination/coordinates even while the client is stopped. */
     fun clearLocation(): Boolean {
         check(!closed.get()) { "FastVoiceClient is closed" }
-        if (!started.get()) return false
         resetSleepCue()
-        return synchronized(locationLock) {
+        synchronized(locationLock) {
             locationRequestEpoch.incrementAndGet()
             locationSnapshot = LocationSnapshot()
-            sendIfReady(ProtocolEncoder.locationClear())
+            if (started.get()) {
+                sendIfReady(ProtocolEncoder.locationClear())
+            }
         }
+        return true
     }
 
     /**
@@ -498,7 +505,9 @@ class FastVoiceClient @JvmOverloads constructor(
     }
 
     private fun acceptHostLocation(request: Long, json: JSONObject?) {
-        if (json == null || !started.get() || closed.get()) {
+        if (json == null || !started.get() || closed.get() ||
+            locationRequestEpoch.get() != request
+        ) {
             return
         }
         val latitude = (json.opt("latitude") as? Number)?.toDouble()
