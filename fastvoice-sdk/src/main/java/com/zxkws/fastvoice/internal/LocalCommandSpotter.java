@@ -17,16 +17,13 @@ import com.k2fsa.sherpa.onnx.OnlineZipformer2CtcModelConfig;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
-import java.util.Collection;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.Set;
 
 /** 本地中文控制词检测器。音频由主录音线程提供，不单独占用麦克风。 */
 final class LocalCommandSpotter {
     enum KeywordRoute {
-        WAKE,
         CONTROL,
         IGNORE,
     }
@@ -42,18 +39,11 @@ final class LocalCommandSpotter {
     private final KeywordLineRegistry keywordLines = new KeywordLineRegistry();
 
     /** Native sherpa may return labels from its static config; fail closed against our allowlist. */
-    static KeywordRoute routeKeyword(String keyword, Collection<String> enabledWakeWords) {
-        if (keyword != null && enabledWakeWords != null && enabledWakeWords.contains(keyword)) {
-            return KeywordRoute.WAKE;
-        }
+    static KeywordRoute routeKeyword(String keyword) {
         return CONTROL_WORDS.contains(keyword) ? KeywordRoute.CONTROL : KeywordRoute.IGNORE;
     }
 
     public synchronized void init(AssetManager assets) {
-        init(assets, Collections.singleton("咘嘀"));
-    }
-
-    public synchronized void init(AssetManager assets, Collection<String> wakeWords) {
         if (spotter != null) return;
         OnlineTransducerModelConfig transducer = new OnlineTransducerModelConfig(
                 DIR + "/encoder-epoch-99-avg-1-chunk-16-left-64.int8.onnx",
@@ -73,14 +63,7 @@ final class LocalCommandSpotter {
                 DIR + "/keywords.txt", 1.5f, 0.25f, 1);
         spotter = new KeywordSpotter(assets, config);
         loadKeywordLines(assets);
-        configureWakeWords(wakeWords);
-    }
-
-    public synchronized void configureWakeWords(Collection<String> wakeWords) {
-        if (spotter == null) return;
-        LinkedHashSet<String> enabled = new LinkedHashSet<>(CONTROL_WORDS);
-        enabled.addAll(wakeWords);
-        String keywords = keywordLines.render(enabled);
+        String keywords = keywordLines.render(CONTROL_WORDS);
         if (keywords.isEmpty()) throw new IllegalArgumentException("没有可用的本地关键词");
         // sherpa-onnx 1.13.2 merges dynamic keywords with config.keywordsFile. Preserve every
         // pronunciation and filter its result again in routeKeyword(). Keep the old stream alive

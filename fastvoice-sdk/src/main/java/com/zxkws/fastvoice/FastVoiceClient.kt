@@ -14,10 +14,8 @@ import com.zxkws.fastvoice.internal.LocalCommandTimeoutPolicy
 import com.zxkws.fastvoice.internal.PlaybackTerminalState
 import com.zxkws.fastvoice.internal.ProtocolEncoder
 import com.zxkws.fastvoice.internal.ReadyMessage
-import com.zxkws.fastvoice.internal.SleepCuePlayer
 import java.io.Closeable
 import java.net.Proxy
-import java.util.Collections
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
@@ -53,7 +51,6 @@ class FastVoiceClient @JvmOverloads constructor(
     private val connectionEpoch = AtomicLong(0)
     private val locationRequestEpoch = AtomicLong(0)
     private val socket = AtomicReference<WebSocket?>(null)
-    private val wakeWords = AtomicReference<List<String>>(emptyList())
 
     private val playbackId = AtomicInteger(-1)
     private val playbackEpoch = AtomicLong(0)
@@ -93,90 +90,54 @@ class FastVoiceClient @JvmOverloads constructor(
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .build()
 
-    private lateinit var audio: AudioEngine
-    private val sleepCueArmed = AtomicBoolean(false)
-    private val sleepCue = SleepCuePlayer(
-        context = appContext,
-        canPlay = { started.get() && !closed.get() && ready.get() },
-        onFailure = { log(FastVoiceLogLevel.WARN, "sleep cue unavailable", it) },
-    )
     private val audioCallback = object : AudioEngine.Callback {
-            override fun onWakeWord(word: String): Boolean {
-                resetSleepCue()
-                requestHostLocation()
-                val current = socket.get()
-                val sent = ready.get() && current != null &&
-                    current.send(ProtocolEncoder.wake(word))
-                if (!sent) {
-                    audio.setWakeArmed(wakeLifecycleReady())
-                    emitLocalError("wake_send_failed")
-                } else {
-                    sleepCueArmed.set(true)
-                }
-                return sent
-            }
-
-            override fun onLocalCommandCandidate(generation: Int, text: String) {
-                handleLocalCommandCandidate(generation, text)
-            }
-
-            override fun onUplinkPacket(packet: ByteArray) {
-                socket.get()?.takeIf { ready.get() }?.send(ByteString.of(*packet))
-            }
-
-            override fun onPlaybackStarted() = Unit
-
-            override fun onPlaybackProgress(generation: Int, playedMs: Long) {
-                if (generation != playbackId.get()) return
-                val epoch = playbackEpoch.get()
-                if (playbackTerminalState.failureReason(generation, epoch) != null) return
-                socket.get()?.takeIf { ready.get() }
-                    ?.send(ProtocolEncoder.playbackProgress(generation, playedMs))
-            }
-
-            override fun onPlaybackFinished(generation: Int) {
-                handlePlaybackFinished(generation)
-            }
-
-            override fun onPlaybackFailed(generation: Int, reason: String) {
-                handlePlaybackFailed(generation, reason)
-            }
-
-            override fun onTrace(message: String) {
-                log(FastVoiceLogLevel.DEBUG, message, null)
-            }
-
-            override fun onDiagnostic(code: String, message: String, error: Throwable?) {
-                log(
-                    if (error == null) FastVoiceLogLevel.WARN else FastVoiceLogLevel.ERROR,
-                    "$code: $message",
-                    error,
-                )
-                emitLocalError(code, message.ifEmpty { null }, error)
-            }
+        override fun onLocalCommandCandidate(generation: Int, text: String) {
+            handleLocalCommandCandidate(generation, text)
         }
 
-    init {
-        audio = AudioEngine(
-            context = appContext,
-            routeToSpeaker = config.routeAudioToSpeaker,
-            callback = audioCallback,
-        )
-        val unsupportedWakeWords = config.preferredWakeWords.filterNot {
-            it in AudioEngine.SUPPORTED_WAKE_WORDS
+        override fun onUplinkPacket(packet: ByteArray) {
+            socket.get()?.takeIf { ready.get() }?.send(ByteString.of(*packet))
         }
-        require(unsupportedWakeWords.isEmpty()) {
-            "preferredWakeWords unsupported by the local model: $unsupportedWakeWords"
+
+        override fun onPlaybackProgress(generation: Int, playedMs: Long) {
+            if (generation != playbackId.get()) return
+            val epoch = playbackEpoch.get()
+            if (playbackTerminalState.failureReason(generation, epoch) != null) return
+            socket.get()?.takeIf { ready.get() }
+                ?.send(ProtocolEncoder.playbackProgress(generation, playedMs))
+        }
+
+        override fun onPlaybackFinished(generation: Int) {
+            handlePlaybackFinished(generation)
+        }
+
+        override fun onPlaybackFailed(generation: Int, reason: String) {
+            handlePlaybackFailed(generation, reason)
+        }
+
+        override fun onTrace(message: String) {
+            log(FastVoiceLogLevel.DEBUG, message, null)
+        }
+
+        override fun onDiagnostic(code: String, message: String, error: Throwable?) {
+            log(
+                if (error == null) FastVoiceLogLevel.WARN else FastVoiceLogLevel.ERROR,
+                "$code: $message",
+                error,
+            )
+            emitLocalError(code, message.ifEmpty { null }, error)
         }
     }
+
+    private val audio = AudioEngine(
+        context = appContext,
+        routeToSpeaker = config.routeAudioToSpeaker,
+        callback = audioCallback,
+    )
 
     /** Whether this instance currently owns audio resources and reconnect work. */
     val isStarted: Boolean
         get() = started.get()
-
-    /** Exact server-selected wake words supported and enabled by this client. */
-    val activeWakeWords: List<String>
-        get() = wakeWords.get()
 
     @Synchronized
     fun start(): Boolean {
@@ -194,14 +155,10 @@ class FastVoiceClient @JvmOverloads constructor(
             return false
         }
         if (!started.compareAndSet(false, true)) return true
-        resetSleepCue()
         if (!audio.start()) {
             started.set(false)
             return false
         }
-        audio.setKwsSessionEnabled(false)
-        audio.setWakeWords(selectedLocalWakeWords())
-        audio.setWakeArmed(false)
         connect(connectionEpoch.incrementAndGet())
         return true
     }
@@ -209,24 +166,20 @@ class FastVoiceClient @JvmOverloads constructor(
     @Synchronized
     fun stop() {
         val wasStarted = started.getAndSet(false)
-        resetSleepCue()
         if (!wasStarted) return
         connectionEpoch.incrementAndGet()
         locationRequestEpoch.incrementAndGet()
         ready.set(false)
         reconnectFuture?.cancel(false)
         reconnectFuture = null
-        audio.setKwsSessionEnabled(false)
-        audio.setWakeArmed(false)
         audio.stopCapture()
         socket.getAndSet(null)?.close(1_000, "client stop")
-        clearConnectionState()
+        invalidatePlayback()
         audio.stop()
     }
 
     /** Stops local output immediately and cancels the current server turn. */
     fun interrupt() {
-        resetSleepCue()
         invalidatePlayback()
         socket.get()?.takeIf { ready.get() }?.send(ProtocolEncoder.turnCancel())
     }
@@ -242,7 +195,6 @@ class FastVoiceClient @JvmOverloads constructor(
         check(!closed.get()) { "FastVoiceClient is closed" }
         val normalizedStationName = stationName.trim()
         require(normalizedStationName.isNotEmpty()) { "stationName must not be blank" }
-        resetSleepCue()
         synchronized(locationLock) {
             locationSnapshot = locationSnapshot.copy(stationName = normalizedStationName)
             if (started.get()) {
@@ -264,7 +216,6 @@ class FastVoiceClient @JvmOverloads constructor(
         val normalizedStationName = stationName.trim()
         require(normalizedStationName.isNotEmpty()) { "stationName must not be blank" }
         if (!started.get()) return false
-        resetSleepCue()
         return synchronized(locationLock) {
             locationSnapshot = locationSnapshot.copy(stationName = normalizedStationName)
             sendIfReady(ProtocolEncoder.destinationPlay(normalizedStationName))
@@ -283,7 +234,6 @@ class FastVoiceClient @JvmOverloads constructor(
         require(longitude.isFinite() && longitude in -180.0..180.0) {
             "longitude must be finite and within -180..180"
         }
-        resetSleepCue()
         synchronized(locationLock) {
             // Invalidate a slower provider request that started before this explicit update.
             locationRequestEpoch.incrementAndGet()
@@ -301,7 +251,6 @@ class FastVoiceClient @JvmOverloads constructor(
     /** Clears locally cached destination/coordinates even while the client is stopped. */
     fun clearLocation(): Boolean {
         check(!closed.get()) { "FastVoiceClient is closed" }
-        resetSleepCue()
         synchronized(locationLock) {
             locationRequestEpoch.incrementAndGet()
             locationSnapshot = LocationSnapshot()
@@ -312,24 +261,17 @@ class FastVoiceClient @JvmOverloads constructor(
         return true
     }
 
-    /**
-     * Requests welcome playback for the area already fixed by [FastVoiceConfig.areaId].
-     * [stationName] is optional selected-destination metadata only; it does not select the park/area
-     * and does not represent the device's physical position.
-     */
-    @JvmOverloads
-    fun playWelcome(stationName: String? = null): Boolean {
+    /** Requests welcome playback for the area already fixed by [FastVoiceConfig.areaId]. */
+    fun playWelcome(): Boolean {
         check(!closed.get()) { "FastVoiceClient is closed" }
         if (!started.get()) return false
-        resetSleepCue()
-        return sendIfReady(ProtocolEncoder.welcomePlay(stationName))
+        return sendIfReady(ProtocolEncoder.welcomePlay())
     }
 
     @Synchronized
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         stop()
-        sleepCue.close()
         scheduler.shutdownNow()
         httpClient.dispatcher.executorService.shutdown()
         httpClient.connectionPool.evictAll()
@@ -443,29 +385,18 @@ class FastVoiceClient @JvmOverloads constructor(
         }
         val readyMessage = ReadyMessage(
             connectionId = message.strictString("connection_id"),
-            wakeWords = message.strictStringList("wake_words"),
             controlTimeoutMs = message.strictLong("control_timeout_ms"),
         )
-        if (!CurrentProtocol.acceptsReady(readyMessage, AudioEngine.SUPPORTED_WAKE_WORDS)) {
+        if (!CurrentProtocol.acceptsReady(readyMessage)) {
             terminateProtocol("invalid_ready")
             return
         }
-        resetSleepCue()
         localCommandTimeoutMs = LocalCommandTimeoutPolicy.clientTimeoutMs(
             requireNotNull(readyMessage.controlTimeoutMs),
         )
-        val allowed = selectedLocalWakeWords().toSet()
-        val active = requireNotNull(readyMessage.wakeWords).filter { it in allowed }
-        val immutable = Collections.unmodifiableList(ArrayList(active))
-        wakeWords.set(immutable)
-        audio.setWakeWords(active)
         ready.set(true)
         reconnectAttempt.set(0)
-        audio.setKwsSessionEnabled(true)
-        // ready 只表示协议已协商；是否允许唤醒由后续 state=sleeping 明确授权。
-        audio.setWakeArmed(false)
         sendStoredLocation()
-        requestHostLocation()
     }
 
     private fun sendStoredLocation() {
@@ -538,38 +469,17 @@ class FastVoiceClient @JvmOverloads constructor(
     }
 
     private fun handleState(message: JSONObject) {
-        val fieldsValid = if (message.strictString("value") == "sleeping") {
-            message.hasExactFields(setOf("type", "value"), optional = setOf("reason"))
-        } else {
-            message.hasExactFields(setOf("type", "value"))
-        }
-        if (!fieldsValid) {
+        if (!message.hasExactFields(setOf("type", "value"))) {
             terminateProtocol("invalid_state")
             return
         }
         val value = message.strictString("value")
-        val reason = if (message.has("reason")) message.strictString("reason") else null
-        if ((message.has("reason") && reason == null) ||
-            !CurrentProtocol.acceptsState(value, reason)
-        ) {
+        if (!CurrentProtocol.acceptsState(value)) {
             terminateProtocol("invalid_state")
             return
         }
         val state = requireNotNull(value)
-        audio.setWakeArmed(
-            CurrentProtocol.authorizesWake(state) && wakeLifecycleReady(),
-        )
-        if (state == "sleeping") {
-            val armed = sleepCueArmed.getAndSet(false)
-            if (armed && reason == CurrentProtocol.INACTIVITY_TIMEOUT_REASON) {
-                log(
-                    FastVoiceLogLevel.DEBUG,
-                    "sleep cue triggered: reason=$reason",
-                    null,
-                )
-                sleepCue.play()
-            }
-        }
+        if (state == "listening") requestHostLocation()
         emit(FastVoiceEvent.StateChanged(FastVoiceState(state)))
     }
 
@@ -621,22 +531,11 @@ class FastVoiceClient @JvmOverloads constructor(
     }
 
     private fun handleWelcomeAck(message: JSONObject) {
-        if (!message.hasExactFields(setOf("type")) &&
-            !message.hasExactFields(setOf("type", "station_name"))
-        ) {
+        if (!message.hasExactFields(setOf("type"))) {
             terminateProtocol("invalid_welcome_ack")
             return
         }
-        val stationName = if (message.has("station_name") && !message.isNull("station_name")) {
-            message.strictString("station_name")
-        } else {
-            null
-        }
-        if (message.has("station_name") && stationName.isNullOrBlank()) {
-            terminateProtocol("invalid_welcome_ack")
-            return
-        }
-        emit(FastVoiceEvent.WelcomeAck(stationName))
+        emit(FastVoiceEvent.WelcomeAck())
     }
 
     private fun handlePlaybackStart(message: JSONObject) {
@@ -655,7 +554,6 @@ class FastVoiceClient @JvmOverloads constructor(
             terminateProtocol("invalid_playback_start")
             return
         }
-        sleepCue.cancel()
         synchronized(playbackControlLock) {
             clearLocalCommandPrePauseLocked(resume = false)
             playbackId.set(id)
@@ -664,7 +562,6 @@ class FastVoiceClient @JvmOverloads constructor(
             playbackTerminalState.begin(id, epoch)
             serverPlaybackPaused.set(false)
             audio.setPromptPlayback(true)
-            audio.setWakeArmed(false)
             audio.beginPlayback(id)
         }
     }
@@ -705,8 +602,6 @@ class FastVoiceClient @JvmOverloads constructor(
                     code = "invalid_pre_roll"
                     false
                 } else {
-                    sleepCue.cancel()
-                    audio.setWakeArmed(false)
                     audio.startCapture(preRollMs).also {
                         if (!it) code = "capture_unavailable"
                     }
@@ -800,7 +695,7 @@ class FastVoiceClient @JvmOverloads constructor(
         val requiredFields = mutableSetOf("type", "scope", "ref", "code", "recoverable")
         if (!message.hasExactFields(
                 requiredFields,
-                optional = setOf("message", "fallback_text", "rev"),
+                optional = setOf("message", "fallback_text"),
             )
         ) {
             terminateProtocol("invalid_error")
@@ -809,7 +704,6 @@ class FastVoiceClient @JvmOverloads constructor(
         val ref = message.strictString("ref")
         val code = message.strictString("code")
         val recoverable = message.strictBoolean("recoverable")
-        val rev = message.strictLong("rev")
         val detail = message.optionalStrictString("message")
         val fallbackText = message.optionalStrictString("fallback_text")
         if (scope.isNullOrBlank() || ref == null || code.isNullOrBlank() || recoverable == null ||
@@ -821,7 +715,6 @@ class FastVoiceClient @JvmOverloads constructor(
         val error = FastVoiceError(
             scope = scope,
             ref = ref,
-            rev = rev,
             code = code,
             message = detail.value,
             recoverable = recoverable,
@@ -1002,13 +895,6 @@ class FastVoiceClient @JvmOverloads constructor(
     private fun sendIfReady(message: String): Boolean =
         socket.get()?.takeIf { ready.get() }?.send(message) == true
 
-    private fun wakeLifecycleReady(): Boolean =
-        started.get() && ready.get() && wakeWords.get().isNotEmpty()
-
-    private fun selectedLocalWakeWords(): List<String> =
-        if (config.preferredWakeWords.isEmpty()) AudioEngine.SUPPORTED_WAKE_WORDS.toList()
-        else config.preferredWakeWords
-
     private fun handleDisconnected(
         session: Long,
         webSocket: WebSocket,
@@ -1020,10 +906,6 @@ class FastVoiceClient @JvmOverloads constructor(
         val current = socket.compareAndSet(webSocket, null)
         if (current) {
             ready.set(false)
-            resetSleepCue()
-            wakeWords.set(emptyList())
-            audio.setKwsSessionEnabled(false)
-            audio.setWakeArmed(false)
             audio.stopCapture()
             invalidatePlayback()
         }
@@ -1035,18 +917,9 @@ class FastVoiceClient @JvmOverloads constructor(
     private fun terminateProtocol(code: String, cause: Throwable? = null) {
         emitLocalError(code, cause?.message, cause)
         ready.set(false)
-        resetSleepCue()
-        audio.setKwsSessionEnabled(false)
-        audio.setWakeArmed(false)
         audio.stopCapture()
         invalidatePlayback()
         socket.get()?.close(1_002, code)
-    }
-
-    private fun clearConnectionState() {
-        resetSleepCue()
-        wakeWords.set(emptyList())
-        invalidatePlayback()
     }
 
     private fun scheduleReconnect(session: Long) {
@@ -1056,11 +929,6 @@ class FastVoiceClient @JvmOverloads constructor(
         val delay = delays[minOf(attempt, delays.lastIndex)]
         reconnectFuture?.cancel(false)
         reconnectFuture = scheduler.schedule({ connect(session) }, delay, TimeUnit.SECONDS)
-    }
-
-    private fun resetSleepCue() {
-        sleepCueArmed.set(false)
-        sleepCue.cancel()
     }
 
     private fun playbackFailureCode(reason: String): String = when {
@@ -1103,12 +971,6 @@ class FastVoiceClient @JvmOverloads constructor(
         runCatching { config.logger?.log(level, message, error) }
     }
 
-    companion object {
-        @JvmField
-        val SUPPORTED_WAKE_WORDS: List<String> = Collections.unmodifiableList(
-            ArrayList(AudioEngine.SUPPORTED_WAKE_WORDS),
-        )
-    }
 }
 
 private fun JSONObject.strictString(name: String): String? = opt(name) as? String
@@ -1141,12 +1003,3 @@ private fun JSONObject.strictLong(name: String): Long? {
 private fun JSONObject.strictInt(name: String): Int? = strictLong(name)?.takeIf {
     it in Int.MIN_VALUE.toLong()..Int.MAX_VALUE.toLong()
 }?.toInt()
-
-private fun JSONObject.strictStringList(name: String): List<String>? {
-    val array = optJSONArray(name) ?: return null
-    val values = ArrayList<String>(array.length())
-    for (index in 0 until array.length()) {
-        values += array.opt(index) as? String ?: return null
-    }
-    return values
-}

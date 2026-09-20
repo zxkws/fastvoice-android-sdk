@@ -29,7 +29,7 @@ class PublicModelsTest {
         )
 
         assertEquals(
-            "FastVoiceConfig(endpoint=[configured], areaId=[configured], preferredWakeWords=[], " +
+            "FastVoiceConfig(endpoint=[configured], areaId=[configured], " +
                 "routeAudioToSpeaker=true, logger=null, getLocation=null)",
             config.toString(),
         )
@@ -79,7 +79,7 @@ class PublicModelsTest {
             FastVoiceEvent.LocationAck("station_1907"),
         )
         assertEquals("station_1907", FastVoiceEvent.DestinationAck("station_1907").stationName)
-        assertEquals(null, FastVoiceEvent.WelcomeAck(null).stationName)
+        assertEquals("WelcomeAck", FastVoiceEvent.WelcomeAck().javaClass.simpleName)
         assertEquals(
             "content-1",
             FastVoiceEvent.PlaybackFinished(7, "content-1").contentId,
@@ -99,7 +99,6 @@ class PublicModelsTest {
 
     @Test
     fun validProtocolStatesRemainVerbatim() {
-        assertEquals("idle", FastVoiceState.IDLE.value)
         assertEquals("prompting", FastVoiceState.PROMPTING.value)
         assertEquals("listening", FastVoiceState("listening").value)
     }

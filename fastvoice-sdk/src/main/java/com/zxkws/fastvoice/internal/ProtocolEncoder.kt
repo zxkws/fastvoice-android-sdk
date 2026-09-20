@@ -9,7 +9,6 @@ internal object ProtocolEncoder {
         return JsonEncoder.encode(
         linkedMapOf(
             "type" to "hello",
-            "wake" to true,
             "area_id" to normalizedAreaId,
         ),
         )
@@ -57,15 +56,8 @@ internal object ProtocolEncoder {
     }
 
     @JvmSynthetic
-    fun welcomePlay(stationName: String?): String = JsonEncoder.encode(
-        linkedMapOf<String, Any?>("type" to "welcome.play").apply {
-            stationName?.trim()?.takeIf(String::isNotEmpty)?.let { put("station_name", it) }
-        },
-    )
-
-    @JvmSynthetic
-    fun wake(word: String): String = JsonEncoder.encode(
-        linkedMapOf("type" to "wake", "word" to word),
+    fun welcomePlay(): String = JsonEncoder.encode(
+        linkedMapOf("type" to "welcome.play"),
     )
 
     @JvmSynthetic

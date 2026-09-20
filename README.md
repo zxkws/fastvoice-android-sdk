@@ -1,10 +1,12 @@
 # FastVoice Android SDK
 
 FastVoice 是面向 Android 的实时语音 SDK。负责 WebSocket 连接、麦克风
-采集、Opus 编解码、端侧唤醒词、流式播放、打断和断线重连。
+采集、Opus 编解码、播放期控制词检测、流式播放、打断和断线重连。
 
-SDK 当前发布版本为 `0.17.0`。
-SDK 不调用 Android `TextToSpeech`；所有可听语音都来自服务端，休眠提示音只是本地非语音音效。
+SDK 当前源码版本为 `1.0.0`。从 `1.0.0` 起，SDK 与 FastVoice 服务端镜像共享同一套
+兼容性版本：不兼容的 wire / 公共 API 变更升级主版本，兼容新增升级次版本，兼容修复升级补丁版本。
+`1.0.0` 是新的破坏性基线，不兼容 0.x wire/API；宿主与服务端应按同一主版本升级，不提供旧字段或旧消息 fallback。
+SDK 不调用 Android `TextToSpeech`；所有助手语音都来自服务端。当前 no-wake 主链路不再使用本地休眠提示音。
 ASR、TTS、MaxKB 和大模型均是服务端实现细节，Android 不保存
 上游密钥，也不需要因服务端替换语音供应商而改代码。
 
@@ -31,7 +33,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("io.github.zxkws:fastvoice-android-sdk:0.17.0")
+    implementation("io.github.zxkws:fastvoice-android-sdk:1.0.0")
 }
 ```
 
@@ -62,7 +64,7 @@ val client = FastVoiceClient(
     }
 }
 
-// 2. 启动 — hello 一次性上报 area_id，服务端 state=sleeping 后授权本地唤醒
+// 2. 启动 — hello 一次性上报 area_id，ready 后直接进入 capture/listening
 client.start()
 
 // 3. 同步宿主所选目的地；不会自动播放
@@ -124,13 +126,13 @@ val config = FastVoiceConfig(
 
 | 方法 | 说明 |
 |------|------|
-| `start(): Boolean` | 启动连接和音频。SDK 在 `hello` 一次性上报必填 `area_id`，收到 `ready` 后开放唤醒。 |
+| `start(): Boolean` | 启动连接和音频。SDK 在 `hello` 一次性上报必填 `area_id`；服务端 ready 后直接开放 capture 并进入 listening。 |
 | `stop()` | 断开连接，停止音频。可重新 `start()`。 |
 | `interrupt()` | 打断当前播放并取消服务端当前回合。 |
 | `updateLocation(stationName)` | 同步宿主当前所选目的地；可在 `start()` 前写入最新状态，连接 `ready` 后自动补发；不会自动播放。 |
 | `playDestination(stationName)` | 显式选择并播放一个目的地介绍；重复调用同一名称表示明确重播。 |
 | `clearLocation()` | 清除 SDK 缓存的站点名称/坐标；已连接时同时让服务端重置对应上下文，保留本 Session 的 `area_id`。 |
-| `playWelcome(stationName?)` | 请求服务端播放欢迎词；园区由 `FastVoiceConfig.areaId` 固定，公园 ID 不通过这里传。 |
+| `playWelcome()` | 请求服务端播放当前区域欢迎词；区域只由 `FastVoiceConfig.areaId` 固定。 |
 | `close()` | 永久释放实例。 |
 
 `start()`、位置、目的地讲解和欢迎词方法返回 `Boolean`。对 `updateLocation()` /
@@ -141,7 +143,7 @@ val config = FastVoiceConfig(
 
 | 事件 | 说明 |
 |------|------|
-| `StateChanged(state)` | 状态变化：sleeping / listening / recognizing / generating / speaking / prompting |
+| `StateChanged(state)` | 状态变化：listening / recognizing / generating / speaking / prompting |
 | `Transcript(role, text, final)` | 语音转文字（role=user）或回答文字（role=assistant） |
 | `LocationAck` | 服务端确认位置上报 |
 | `DestinationAck(stationName)` | 服务端确认显式目的地讲解请求 |
@@ -171,9 +173,9 @@ getLocation = { callback ->
 ```
 
 匿名函数通过 callback 返回 `{"latitude":39.81,"longitude":116.37}` 或 `null`。
-`area_id` 不由定位回调返回，而是来自必填的 `FastVoiceConfig.areaId`。SDK 在连接就绪
-和每次唤醒时自动调用、解析和上传坐标；坐标刷新帧只包含经纬度，不会重复携带
-`area_id`，也不会触发目的地讲解。当前 GPS 只供服务端天气能力使用，不能用于推断
+`area_id` 不由定位回调返回，而是来自必填的 `FastVoiceConfig.areaId`。SDK 每次收到服务端
+`state=listening` 时调用、解析和上传坐标；服务端首次 ready、回答/重置恢复以及真实用户
+VAD 起声都会发送 listening。坐标刷新帧只包含经纬度，不会重复携带 `area_id`，也不会触发目的地讲解。当前 GPS 只供服务端天气能力使用，不能用于推断
 所选目的地或真实到站状态。宿主通常无需手动调用 `updateCoordinates()`。如果宿主显式调用它，SDK 会把该坐标视为比已经在途的旧 `getLocation` 请求更新，并丢弃随后迟到的旧回调，避免旧坐标覆盖新坐标。
 
 ## 园区与知识库范围
@@ -187,38 +189,19 @@ getLocation = { callback ->
 `areaId` 创建新实例。`areaId` 只表示服务园区/知识范围，不证明车辆物理位置。
 `updateLocation()` 只同步所选目的地；`playDestination()` 才显式启动目的地讲解。
 
-## 唤醒词机制
+## 独立按压麦克风与 no-wake
 
-SDK 内置 Sherpa-ONNX 端侧关键词检测（KWS），唤醒词由服务端下发，宿主无需配置。
+当前正式协议不再使用语音唤醒。目标硬件的物理按压本身提供输入授权：
 
-1. **握手**：连接建立后 SDK 自动发送
-   `{"type":"hello","wake":true,"area_id":"18"}`，同时声明端侧 KWS 和本订单固定区域。
-2. **下发**：服务端返回 `{"type":"ready","wake_words":["咘嘀",...]}`，SDK 将词
-   表加载到 Sherpa KWS 引擎。
-3. **唤醒确认**：用户说出任一唤醒词 → SDK 检测命中后上报服务端 → 服务端通过
-   TTS 回复"在呢"并进入监听状态，等待用户提问。
-4. **连续追问**：回答结束后，服务端在追问窗口内继续监听；窗口到期后回到
-   `sleeping`，下一次提问需要重新唤醒。时长由服务端配置，SDK 无需感知。
-5. **播放期间唤醒**：播放期间 KWS 使用放大后的原始 MIC 副本（绕过 AEC3 抑制），
-   确保"停止""换一个"等打断指令不被回声消除吞掉。
+1. SDK 建连后发送 `{"type":"hello","area_id":"18"}`。
+2. 服务端返回 `ready`，随后发送 `capture.start(pre_roll_ms=0)` 与 `state=listening`。
+3. 用户按住独立麦克风即可直接说问题；不需要先说“咘嘀”，也没有“在呢”唤醒提示。
+4. 回答、错误恢复、`location.clear` 和自动重连后都会重新回到 capture/listening。
+5. 本地 Sherpa KWS 仍保留，但只在播放/提示阶段检测“停止 / 继续 / 换一个”等控制候选，候选最终仍由服务端结合 ASR 证据确认。
 
-宿主 App 不需要管理唤醒词列表或 KWS 引擎——`start()` 之后一切自动就绪。
+`FastVoiceClient.start()/stop()` 是长生命周期操作，管理 WebSocket、AudioRecord、AEC 和自动重连，**不要**把它们映射到物理按键按下/松开。当前也不提供额外 `pressToTalkStart/Stop` API；目标麦克风应由硬件自身门控输入。
 
-服务端 `state` 是会话状态的唯一来源：只有 `state=sleeping` 会重新允许端侧 KWS
-发起下一次唤醒；`capture.stop`、播放结束或播放失败只处理各自的音频动作，不再推断
-会话是否已经回到可唤醒状态。
-
-### 休眠提示音
-
-仅当本地成功发送过唤醒帧，且服务端以
-`{"type":"state","value":"sleeping","reason":"inactivity_timeout"}` 结束该交互时，
-SDK 才播放一次本地休眠提示音。首次连接、重连、欢迎词/目的地讲解、打断、错误及不带
-`reason` 的 sleeping 帧均不播放。SDK 不自行计算追问超时。
-
-新唤醒、开始收音/服务端播放、退出 sleeping、Interrupt、Stop/Close 或断连会取消音效。
-音效不改变全局音量、不额外申请音频焦点、不停止 KWS，也不占用服务端 playback ID 或
-产生 `PlaybackFinished` 事件。音效异常仅记诊断日志，不影响语音会话。
-在静音或设备音量很低时可能听不见；音量和是否误触发唤醒仍需在实际设备验收。
+目标独立麦克风仍需真机确认松开后 `AudioRecord.read()` 的实际行为、快速连续按压稳定性、播放期近端收音以及长期空闲 CPU/网络行为。普通手机内置麦克风可以验证协议，但不能替代这些硬件验收。
 
 ## LLM 上下文行为
 
@@ -238,8 +221,10 @@ SDK 才播放一次本地休眠提示音。首次连接、重连、欢迎词/目
 
 ```text
 // 连接建立
-← {"type":"hello","wake":true,"area_id":"18"}
-→ {"type":"ready","connection_id":"c1","wake_words":["咘嘀"]}
+← {"type":"hello","area_id":"18"}
+→ {"type":"ready","connection_id":"c1","control_timeout_ms":2500}
+→ {"type":"control","id":"k1","action":"capture.start","pre_roll_ms":0}
+→ {"type":"state","value":"listening"}
 
 // 同步所选目的地/坐标；不会自动播放
 ← {"type":"location.update","station_name":"藻园门站-靠近西苑地铁","latitude":39.81,"longitude":116.37}
@@ -255,19 +240,15 @@ SDK 才播放一次本地休眠提示音。首次连接、重连、欢迎词/目
 → {"type":"location.ack"}
 ```
 
-唤醒对话的帧序列：
+no-wake 对话帧序列：
 
 ```text
-// 端侧 KWS 检测到唤醒词后 SDK 自动上报
-← （音频帧中包含唤醒词）
+// 用户按住物理麦克风直接说问题；客户端持续上行 Opus
 → {"type":"state","value":"listening"}
-→ （TTS 播报 "在呢"）
-
-// 用户提问（持续上行 Opus 音频帧）
 → {"type":"transcript","role":"user","text":"这里有什么好玩的","final":true}
 → {"type":"transcript","role":"assistant","text":"...","final":true}
 → （48 kHz Opus 音频流）
-→ {"type":"state","value":"sleeping"}
+→ {"type":"state","value":"listening"}
 ```
 
 ## 使用场景
@@ -300,7 +281,7 @@ client.playWelcome()
 ```kotlin
 // 连上就能说话，不需要上报位置
 client.start()
-// 用户说唤醒词 → 提问 → 服务端回答
+// 用户按住独立麦克风直接提问 → 服务端回答
 // 没有位置上下文时，服务端按通用知识回答
 ```
 
@@ -316,7 +297,7 @@ client.clearLocation()
 SDK 自动重连。重连后：
 - 如果之前同步过目的地/坐标，自动重发 `location.update` 恢复状态
 - 不会自动发送 `destination.play`，因此不会因为重连重复讲解
-- 唤醒词立即恢复可用
+- 服务端重新开放 capture/listening，可直接进行下一轮
 - 不需要宿主做任何操作
 
 ## 线程与安全
@@ -324,15 +305,15 @@ SDK 自动重连。重连后：
 - 回调统一在 Android 主线程触发
 - 一个 `FastVoiceClient` 对应一个前台语音所有权
 - `start()`、`stop()` 幂等，`close()` 永久释放
-- 端侧唤醒、断线重连和绕过系统代理是固定行为
+- no-wake、断线重连和绕过系统代理是固定行为
 - 当前内网部署使用 `ws://`；以后具备证书和域名后再切换 `wss://`
 
 ## 固定音频协议
 
 - 上行：16 kHz 单声道 PCM，播放及回声尾窗使用 WebRTC AEC3 输出，无近期播放时使用原始 MIC；按 20 ms 编为 Opus 传输
 - 下行：48 kHz 单声道 20 ms Opus
-- 播放期间端侧 KWS 使用放大后的原始 MIC 副本
-- AudioTrack 实际接受的 48 kHz PCM 作为客户端 AEC3 参考；预录缓冲与实时上行使用相同的音频来源，KWS 分支独立
+- 播放期间控制词 KWS 使用放大后的原始 MIC 副本
+- AudioTrack 实际接受的 48 kHz PCM 作为客户端 AEC3 参考；预录缓冲与实时上行使用相同的音频来源，播放控制 KWS 分支独立
 
 ## USB 调试
 

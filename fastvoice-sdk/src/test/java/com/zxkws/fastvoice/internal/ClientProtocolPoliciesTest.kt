@@ -8,21 +8,11 @@ import org.junit.Test
 
 class ClientProtocolPoliciesTest {
     @Test
-    fun stateReasonIsReservedForSleepingInactivityTimeout() {
-        assertTrue(CurrentProtocol.acceptsState("sleeping", null))
-        assertTrue(CurrentProtocol.acceptsState("sleeping", "inactivity_timeout"))
-        assertFalse(CurrentProtocol.acceptsState("sleeping", "other"))
-        assertFalse(CurrentProtocol.acceptsState("listening", "inactivity_timeout"))
-        assertFalse(CurrentProtocol.acceptsState(null, null))
-    }
-
-    @Test
-    fun onlySleepingAuthorizesFreshWake() {
-        assertTrue(CurrentProtocol.authorizesWake("sleeping"))
-        for (state in CurrentProtocol.STATE_VALUES - "sleeping") {
-            assertFalse(state, CurrentProtocol.authorizesWake(state))
-        }
-        assertFalse(CurrentProtocol.authorizesWake(null))
+    fun onlyDefinedStatesAreAccepted() {
+        assertTrue(CurrentProtocol.acceptsState("listening"))
+        assertTrue(CurrentProtocol.acceptsState("speaking"))
+        assertFalse(CurrentProtocol.acceptsState("unknown"))
+        assertFalse(CurrentProtocol.acceptsState(null))
     }
 
     @Test

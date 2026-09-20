@@ -1,13 +1,13 @@
 # FastVoice Android SDK 详细指南
 
-适用版本：`0.17.0`
+适用版本：`1.0.0`
 
 ## 1. 能力边界
 
 SDK 只负责 Android 端实时音频和 FastVoice WebSocket 协议：
 
 - 麦克风采集、16kHz/20ms Opus 上行。
-- Sherpa-ONNX 端侧唤醒和播放期控制词候选。
+- Sherpa-ONNX 播放期控制词候选。
 - 48kHz/20ms Opus 下行解码和 `AudioTrack` 播放。
 - WebRTC AEC3 回声消除。
 - 播放物理进度/终态、打断和断线重连。
@@ -34,7 +34,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("io.github.zxkws:fastvoice-android-sdk:0.17.0")
+    implementation("io.github.zxkws:fastvoice-android-sdk:1.0.0")
 }
 ```
 
@@ -82,13 +82,13 @@ SDK 不接收 token，也不发送
 
 | API | 作用 |
 |---|---|
-| `start()` | 启动音频和 WebSocket；`hello` 一次性发送 `area_id`，收到 `ready` 后开放唤醒 |
+| `start()` | 启动音频和 WebSocket；`hello` 一次性发送 `area_id`，ready 后直接进入 capture/listening |
 | `stop()` | 停止并允许后续重启 |
 | `interrupt()` | 立即停止本地播放并取消服务端当前回合 |
 | `updateLocation(stationName)` | 同步当前所选目的地；可在 `start()` 前写入，`ready` 后自动补发。不会自动播放，也不表示真实物理位置 |
 | `playDestination(stationName)` | 显式选择并播放一个目的地介绍；重复调用可重播 |
 | `clearLocation()` | 清除 SDK 缓存的站点名称/坐标；已连接时同时让服务端重置对应上下文，保留 Session 的 `area_id` |
-| `playWelcome(stationName?)` | 请求欢迎词；园区由 `FastVoiceConfig.areaId` 固定，公园 ID 不在这里传 |
+| `playWelcome()` | 请求当前区域欢迎词；区域只由 `FastVoiceConfig.areaId` 固定 |
 | `close()` | 永久释放实例 |
 
 返回 `true` 只表示 SDK 已接受/发送操作，服务端确认以 `LocationAck`、
@@ -107,7 +107,7 @@ SDK 不接收 token，也不发送
 - `Transcript`：`role/text/final` 按服务端原值传递。
 - `LocationAck` / `DestinationAck` / `WelcomeAck`。
 - `PlaybackFinished` / `PlaybackFailed`：物理播放终态。
-- `Error`：`scope/ref/rev/code/message/recoverable/fallbackText` 按原值传递。
+- `Error`：`scope/ref/code/message/recoverable/fallbackText` 按原值传递。
 
 宿主 App 不应替换服务端 ASR 文字、翻译 code 或重新格式化 ID。
 
@@ -121,8 +121,8 @@ client.clearLocation()
 ```
 
 `FastVoiceConfig.areaId` 在 Client 创建后不可变。每次建立新的 WebSocket 连接，SDK
-都在第一条 `hello` 里发送同一个 `area_id`；服务端 `ready` 返回后立即可以唤醒，
-不再存在 area ack 门禁。`clearLocation()` 清掉站点名称/坐标和对话历史，但 Session 的
+都在第一条 `hello` 里发送同一个 `area_id`；服务端 `ready` 后直接开放 capture/listening，
+不再存在 area ack 或 wake 门禁。`clearLocation()` 清掉站点名称/坐标和对话历史，但 Session 的
 `area_id` 继续保留。
 
 `stationName` 当前只表示宿主所选目的地。SDK 在重连后会用 `location.update` 恢复这个
@@ -131,7 +131,7 @@ snapshot，但不会自动发送 `destination.play`，所以不会因重连重�
 
 宿主显式调用 `updateCoordinates()` 时，SDK 把该坐标视为比已经在途的旧 `getLocation`
 请求更新，并丢弃随后迟到的旧回调。因此不要同时使用 `getLocation` 回调和周期性
-`updateCoordinates()`：两者并用会让唤醒时发起的 provider 请求持续被作废。二选一即可。
+`updateCoordinates()`：两者并用会让 listening 时发起的 provider 请求持续被作废。二选一即可。
 
 同一订单/Client 不支持切换区域。业务订单的区域变化时，关闭旧 Client 并使用新的
 `areaId` 创建新 Client。知识库隔离由服务端把 `area_id` 作为 MaxKB 工作流的同名输入后，在
@@ -146,27 +146,21 @@ getLocation = { callback ->
 ```
 
 匿名函数异步回调 `JSONObject` 或 `null`；对象只需包含数值型 `latitude` 和
-`longitude`。SDK 在连接就绪和每次唤醒时调用该方法，自行解析并上传，重连时先
-恢复缓存。宿主不需要在其他业务位置调用 SDK 的坐标方法。
+`longitude`。SDK 每次收到服务端 `state=listening` 时调用该方法，自行解析并上传；首次 ready、回答/重置恢复和真实用户 VAD 起声都会产生 listening。宿主不需要在其他业务位置调用 SDK 的坐标方法。
 
-## 7. 唤醒、打断与音频
+## 7. no-wake、打断与音频
 
-- `hello` 始终上报 `wake=true` 和当前实例不可变的 `area_id`。
-- 服务端通过 `ready.wake_words` 选择 SDK 内置模型支持的唤醒词。
-- 回答播放期 KWS 检测控制词候选，候选仍由服务端 ASR 确认。
+- `hello` 只上报当前实例不可变的 `area_id`；不再有 `wake=true`。
+- `ready` 不再包含 `wake_words`；服务端随后直接发送 `capture.start(pre_roll_ms=0)` 和 `state=listening`。
+- 用户按住目标独立麦克风即可直接说话，不需要唤醒词或唤醒提示。
+- 回答播放期 Sherpa KWS 只检测控制词候选，候选仍由服务端 ASR 确认。
 - `interrupt()` 是宿主按钮/生命周期使用的确定性打断。
+- `start()/stop()` 管理长生命周期连接和音频资源，不能映射为每次 PTT 按下/松开。
 - 上行为 16kHz 单声道 PCM，并按 20ms 编为 Opus 传输；存在近期播放参考时使用 WebRTC AEC3 结果，否则保留原始 MIC。预录缓冲使用相同来源。
 - 下行固定为 48kHz、单声道、20ms Opus。
-- `AudioTrack` 实际接收的 PCM 作为客户端 AEC3 的远端参考；服务端继续处理残余回声和最终打断裁决，不替代客户端波形级回声消除。
+- `AudioTrack` 实际接收的 PCM 作为客户端 AEC3 的远端参考；服务端继续处理残余回声和最终打断裁决。
 
-### 休眠提示音
-
-只有本地成功发送过唤醒帧，并收到带精确 `reason: "inactivity_timeout"` 的 `sleeping` 状态时，
-SDK 才播放一次本地非语音提示音。首次连接、重连、欢迎词/目的地讲解、打断、错误和不带
-reason 的 sleeping 都不会播放；重复 sleeping 不重播。
-重连重置状态记录。独立静态音轨不会复用服务端 playback ID 或
-发送播放报告，也不改变收音/KWS 状态。新的唤醒、收音、回答播放以及 Stop/Close 均取消它。
-本地短音不接入服务端 TTS/ASR；不经对话音轨的 AEC 参考，需真机确认不会自激或污染唤醒。
+目标独立麦克风必须额外真机验证：松开时 `AudioRecord.read()` 行为、快速连续按压、播放期近端收音、长期空闲 CPU/网络以及是否出现 recorder reopen 风暴。目标硬件未连接时这些项目只能标记 BLOCKED。
 
 ## 8. 构建和发布
 

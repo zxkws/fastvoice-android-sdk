@@ -1,6 +1,5 @@
 package com.zxkws.fastvoice
 
-import java.util.Collections
 import org.json.JSONObject
 
 /** Asynchronous location function supplied once by the host application. */
@@ -21,14 +20,13 @@ fun interface FastVoiceLogger {
 /**
  * Immutable configuration for one [FastVoiceClient] instance.
  *
- * On-device wake, automatic reconnect, and system-proxy bypass are mandatory SDK behaviour and
- * are therefore not configurable. Both `ws://` and `wss://` endpoints are accepted; deployments
+ * Automatic reconnect and system-proxy bypass are mandatory SDK behaviour and are therefore not
+ * configurable. Both `ws://` and `wss://` endpoints are accepted; deployments
  * that need transport encryption are responsible for configuring a `wss://` endpoint.
  */
 class FastVoiceConfig @JvmOverloads constructor(
     areaId: String,
     endpoint: String,
-    preferredWakeWords: List<String> = emptyList(),
     val routeAudioToSpeaker: Boolean = true,
     val logger: FastVoiceLogger? = null,
     val getLocation: FastVoiceGetLocation? = null,
@@ -38,9 +36,6 @@ class FastVoiceConfig @JvmOverloads constructor(
 
     /** Required immutable area id for one order/WebSocket session. */
     val areaId: String = areaId.trim()
-
-    val preferredWakeWords: List<String> =
-        Collections.unmodifiableList(ArrayList(preferredWakeWords))
 
     init {
         require(this.areaId.isNotEmpty()) { "areaId must not be blank" }
@@ -55,8 +50,6 @@ class FastVoiceConfig @JvmOverloads constructor(
     override fun toString(): String = buildString {
         append("FastVoiceConfig(endpoint=[configured]")
         append(", areaId=[configured]")
-        append(", preferredWakeWords=")
-        append(preferredWakeWords)
         append(", routeAudioToSpeaker=")
         append(routeAudioToSpeaker)
         append(", logger=")
@@ -68,16 +61,11 @@ class FastVoiceConfig @JvmOverloads constructor(
 
     class Builder(private val endpoint: String) {
         private var areaId: String = ""
-        private var preferredWakeWords: List<String> = emptyList()
         private var routeAudioToSpeaker: Boolean = true
         private var logger: FastVoiceLogger? = null
         private var getLocation: FastVoiceGetLocation? = null
 
         fun areaId(areaId: String) = apply { this.areaId = areaId }
-
-        fun preferredWakeWords(words: List<String>) = apply {
-            preferredWakeWords = ArrayList(words)
-        }
 
         fun routeAudioToSpeaker(enabled: Boolean) = apply { routeAudioToSpeaker = enabled }
 
@@ -90,7 +78,6 @@ class FastVoiceConfig @JvmOverloads constructor(
         fun build(): FastVoiceConfig = FastVoiceConfig(
             endpoint = endpoint,
             areaId = areaId,
-            preferredWakeWords = preferredWakeWords,
             routeAudioToSpeaker = routeAudioToSpeaker,
             logger = logger,
             getLocation = getLocation,

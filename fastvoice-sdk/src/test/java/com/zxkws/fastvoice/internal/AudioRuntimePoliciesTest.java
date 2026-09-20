@@ -8,7 +8,6 @@ import static org.junit.Assert.fail;
 import java.io.BufferedReader;
 import java.io.StringReader;
 import java.util.Arrays;
-import java.util.Collections;
 
 import org.junit.Test;
 
@@ -89,19 +88,19 @@ public class AudioRuntimePoliciesTest {
     }
 
     @Test
-    public void nativeKeywordLabelsFailClosedAgainstNegotiatedWakeWords() {
-        assertEquals(
-                LocalCommandSpotter.KeywordRoute.WAKE,
-                LocalCommandSpotter.routeKeyword("咘嘀", Collections.singleton("咘嘀")));
+    public void nativeKeywordLabelsFailClosedAgainstControlAllowlist() {
         assertEquals(
                 LocalCommandSpotter.KeywordRoute.IGNORE,
-                LocalCommandSpotter.routeKeyword("咘嘀咘嘀", Collections.singleton("咘嘀")));
+                LocalCommandSpotter.routeKeyword("咘嘀"));
+        assertEquals(
+                LocalCommandSpotter.KeywordRoute.IGNORE,
+                LocalCommandSpotter.routeKeyword("咘嘀咘嘀"));
         assertEquals(
                 LocalCommandSpotter.KeywordRoute.CONTROL,
-                LocalCommandSpotter.routeKeyword("退下", Collections.singleton("咘嘀")));
+                LocalCommandSpotter.routeKeyword("退下"));
         assertEquals(
                 LocalCommandSpotter.KeywordRoute.CONTROL,
-                LocalCommandSpotter.routeKeyword("继续", Collections.singleton("咘嘀")));
+                LocalCommandSpotter.routeKeyword("继续"));
     }
 
     @Test

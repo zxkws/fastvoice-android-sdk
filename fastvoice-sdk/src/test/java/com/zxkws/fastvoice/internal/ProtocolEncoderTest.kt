@@ -5,9 +5,9 @@ import org.junit.Test
 
 class ProtocolEncoderTest {
     @Test
-    fun helloAlwaysRequestsWakeAndBindsAreaOnce() {
+    fun helloBindsAreaWithoutWakeNegotiation() {
         assertEquals(
-            "{\"type\":\"hello\",\"wake\":true,\"area_id\":\"18\"}",
+            "{\"type\":\"hello\",\"area_id\":\"18\"}",
             ProtocolEncoder.hello("18"),
         )
     }
@@ -33,8 +33,8 @@ class ProtocolEncoderTest {
             ProtocolEncoder.destinationPlay("藻园门站-靠近西苑地铁"),
         )
         assertEquals(
-            "{\"type\":\"welcome.play\",\"station_name\":\"藻园门站-靠近西苑地铁\"}",
-            ProtocolEncoder.welcomePlay("藻园门站-靠近西苑地铁"),
+            "{\"type\":\"welcome.play\"}",
+            ProtocolEncoder.welcomePlay(),
         )
     }
 
@@ -50,10 +50,6 @@ class ProtocolEncoderTest {
 
     @Test
     fun playbackControlAndCandidateMessagesUseCurrentNames() {
-        assertEquals(
-            "{\"type\":\"wake\",\"word\":\"咘嘀\"}",
-            ProtocolEncoder.wake("咘嘀"),
-        )
         assertEquals(
             "{\"type\":\"control.candidate\",\"id\":\"lc-7\",\"playback_id\":3," +
                 "\"name\":\"换\\\"一个\\n\"}",

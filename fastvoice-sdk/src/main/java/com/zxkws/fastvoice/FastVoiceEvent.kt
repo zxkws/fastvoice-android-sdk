@@ -3,8 +3,6 @@ package com.zxkws.fastvoice
 /** A state value emitted only after validation against the current wire protocol. */
 data class FastVoiceState(val value: String) {
     companion object {
-        @JvmField val IDLE = FastVoiceState("idle")
-        @JvmField val SLEEPING = FastVoiceState("sleeping")
         @JvmField val LISTENING = FastVoiceState("listening")
         @JvmField val RECOGNIZING = FastVoiceState("recognizing")
         @JvmField val GENERATING = FastVoiceState("generating")
@@ -17,7 +15,6 @@ data class FastVoiceState(val value: String) {
 data class FastVoiceError @JvmOverloads constructor(
     val scope: String? = null,
     val ref: String? = null,
-    val rev: Long? = null,
     val code: String? = null,
     val message: String? = null,
     val recoverable: Boolean = true,
@@ -41,7 +38,7 @@ sealed class FastVoiceEvent {
 
     data class DestinationAck(val stationName: String) : FastVoiceEvent()
 
-    data class WelcomeAck(val stationName: String?) : FastVoiceEvent()
+    class WelcomeAck : FastVoiceEvent()
 
     data class PlaybackFinished(
         val playbackId: Int,

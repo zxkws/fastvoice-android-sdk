@@ -3,7 +3,6 @@ package com.zxkws.fastvoice;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 
-import java.util.Arrays;
 import org.junit.Test;
 
 public class PublicApiJavaTest {
@@ -13,7 +12,6 @@ public class PublicApiJavaTest {
         FastVoiceConfig config = FastVoiceConfig.builder("ws://127.0.0.1:8100/ws")
             .areaId("18")
             .getLocation(callback -> callback.invoke(null))
-            .preferredWakeWords(Arrays.asList("咘嘀", "你好咘嘀"))
             .build();
         FastVoiceListener listener = event -> assertNotNull(event);
 
@@ -44,13 +42,11 @@ public class PublicApiJavaTest {
         );
         assertEquals(
             boolean.class,
-            FastVoiceClient.class.getMethod(
-                "playWelcome", String.class
-            ).getReturnType()
+            FastVoiceClient.class.getMethod("playWelcome").getReturnType()
         );
         listener.onEvent(new FastVoiceEvent.StateChanged(FastVoiceState.LISTENING));
         listener.onEvent(new FastVoiceEvent.LocationAck("station_1907"));
         listener.onEvent(new FastVoiceEvent.DestinationAck("station_1907"));
-        listener.onEvent(new FastVoiceEvent.WelcomeAck(null));
+        listener.onEvent(new FastVoiceEvent.WelcomeAck());
     }
 }

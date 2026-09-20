@@ -8,47 +8,19 @@ import org.junit.Test
 
 class KwsAndCapturePolicyTest {
     @Test
-    fun wakeNeverFallsThroughToControl() {
+    fun wakeLabelsAreIgnoredAndControlsRemainRoutable() {
         assertEquals(
-            KeywordRoutingPolicy.Dispatch.WAKE,
-            KeywordRoutingPolicy.dispatch(
-                LocalCommandSpotter.KeywordRoute.WAKE,
-                playbackOrPromptExpected = false,
-                playbackActive = false,
-                wakeArmed = true,
-            ),
+            LocalCommandSpotter.KeywordRoute.IGNORE,
+            LocalCommandSpotter.routeKeyword("咘嘀"),
+        )
+        assertEquals(
+            KeywordRoutingPolicy.Dispatch.CONTROL,
+            KeywordRoutingPolicy.dispatch(LocalCommandSpotter.routeKeyword("停止")),
         )
         assertEquals(
             KeywordRoutingPolicy.Dispatch.IGNORE,
-            KeywordRoutingPolicy.dispatch(
-                LocalCommandSpotter.KeywordRoute.WAKE,
-                playbackOrPromptExpected = true,
-                playbackActive = true,
-                wakeArmed = true,
-            ),
+            KeywordRoutingPolicy.dispatch(LocalCommandSpotter.KeywordRoute.IGNORE),
         )
-    }
-
-    @Test
-    fun playbackSuppressesWakeButNotControl() {
-        assertEquals(
-            KeywordRoutingPolicy.Dispatch.CONTROL,
-            KeywordRoutingPolicy.dispatch(
-                LocalCommandSpotter.KeywordRoute.CONTROL,
-                playbackOrPromptExpected = true,
-                playbackActive = true,
-                wakeArmed = false,
-            ),
-        )
-    }
-
-    @Test
-    fun disablingAnEnabledKwsSessionResetsItsNativeStream() {
-        assertTrue(KeywordRoutingPolicy.shouldResetStream(true, false))
-        assertFalse(KeywordRoutingPolicy.shouldResetStream(false, false))
-        assertFalse(KeywordRoutingPolicy.shouldResetStream(true, true))
-        assertTrue(KeywordRoutingPolicy.shouldResetPromptStream(true, false, false))
-        assertFalse(KeywordRoutingPolicy.shouldResetPromptStream(true, false, true))
     }
 
     @Test
@@ -98,11 +70,10 @@ class KwsAndCapturePolicyTest {
     }
 
     @Test
-    fun capturePreRollIsFrameAlignedBoundedAndWakeUsesFullRing() {
-        assertEquals(0, CapturePreRollPolicy.frameCount(0, wakeCapturePending = false))
-        assertEquals(40, CapturePreRollPolicy.frameCount(800, wakeCapturePending = false))
-        assertEquals(90, CapturePreRollPolicy.frameCount(5_000, wakeCapturePending = false))
-        assertEquals(90, CapturePreRollPolicy.frameCount(1, wakeCapturePending = true))
+    fun capturePreRollIsFrameAlignedAndBounded() {
+        assertEquals(0, CapturePreRollPolicy.frameCount(0))
+        assertEquals(40, CapturePreRollPolicy.frameCount(800))
+        assertEquals(90, CapturePreRollPolicy.frameCount(5_000))
         assertEquals(50, CapturePreRollPolicy.startIndex(90, 40))
         assertEquals(0, CapturePreRollPolicy.startIndex(20, 40))
     }

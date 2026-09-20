@@ -33,14 +33,10 @@ internal class AudioEngine(
     private val callback: Callback,
 ) {
     interface Callback {
-        /** Called on the recorder thread immediately before wake pre-roll packets. */
-        fun onWakeWord(word: String): Boolean
-
         /** A local KWS hit is only a candidate; the server remains the final arbiter. */
         fun onLocalCommandCandidate(generation: Int, text: String)
 
         fun onUplinkPacket(packet: ByteArray)
-        fun onPlaybackStarted()
         fun onPlaybackProgress(generation: Int, playedMs: Long)
         fun onPlaybackFinished(generation: Int)
         fun onPlaybackFailed(generation: Int, reason: String)
@@ -68,12 +64,6 @@ internal class AudioEngine(
         private const val AUDIO_WRITE_RETRY_DELAY_MS = 20L
         private const val PLAYBACK_PROGRESS_INTERVAL_MS = 500L
 
-        val SUPPORTED_WAKE_WORDS: Set<String> = linkedSetOf(
-            "咘嘀",
-            "咘嘀咘嘀",
-            "你好咘嘀",
-            "咘嘀你好",
-        )
     }
 
     private sealed interface PlaybackItem {
@@ -103,13 +93,9 @@ internal class AudioEngine(
     private val generation = AtomicLong(0)
     private val uplinkEnabled = AtomicBoolean(false)
     private val playbackOrPromptExpected = AtomicBoolean(false)
-    private val kwsSessionEnabled = AtomicBoolean(false)
     private val captureRevision = AtomicLong(0)
     private val activeCaptureRevision = AtomicLong(-1)
     private val pendingCaptureStart = AtomicReference<CaptureStartRequest?>(null)
-    private val wakeCapturePending = AtomicBoolean(false)
-    private val pendingWakeWord = AtomicReference<String?>(null)
-    private val wakeArmed = AtomicBoolean(false)
     private val playbackActive = AtomicBoolean(false)
     private val playbackPaused = AtomicBoolean(false)
     private val playbackEpoch = AtomicInteger(0)
@@ -122,9 +108,6 @@ internal class AudioEngine(
     private val kwsQueue = LinkedBlockingQueue<ByteArray>(100)
     private val decoderLock = Any()
     private val playbackControlLock = Any()
-
-    @Volatile
-    private var enabledWakeWords: Set<String> = setOf("咘嘀")
 
     @Volatile
     private var recorder: AudioRecord? = null
@@ -157,19 +140,15 @@ internal class AudioEngine(
         val runGeneration = generation.incrementAndGet()
         playbackQueue.clear()
         kwsQueue.clear()
-        pendingWakeWord.set(null)
-        wakeArmed.set(false)
         playbackActive.set(false)
         playbackPaused.set(false)
         playbackAccepting.set(false)
         serverPlaybackGeneration.set(-1)
         uplinkEnabled.set(false)
         playbackOrPromptExpected.set(false)
-        kwsSessionEnabled.set(false)
         captureRevision.incrementAndGet()
         activeCaptureRevision.set(-1)
         pendingCaptureStart.set(null)
-        wakeCapturePending.set(false)
 
         try {
             encoder = OpusEncoder(INPUT_RATE, 1, OpusApplication.OPUS_APPLICATION_VOIP).apply {
@@ -204,13 +183,9 @@ internal class AudioEngine(
         generation.incrementAndGet()
         uplinkEnabled.set(false)
         playbackOrPromptExpected.set(false)
-        kwsSessionEnabled.set(false)
         captureRevision.incrementAndGet()
         activeCaptureRevision.set(-1)
         pendingCaptureStart.set(null)
-        wakeCapturePending.set(false)
-        pendingWakeWord.set(null)
-        wakeArmed.set(false)
         playbackActive.set(false)
         playbackPaused.set(false)
         playbackAccepting.set(false)
@@ -247,19 +222,6 @@ internal class AudioEngine(
         restoreAudioRoute()
     }
 
-    fun setWakeWords(words: Collection<String>) {
-        val supported = words.filterTo(linkedSetOf()) { it in SUPPORTED_WAKE_WORDS }
-        enabledWakeWords = supported
-        runCatching { keywordSpotter?.configureWakeWords(supported) }
-            .onFailure {
-                callback.onDiagnostic(
-                    "wake_configuration_failed",
-                    it.message.orEmpty(),
-                    it,
-                )
-            }
-    }
-
     /**
      * Starts capture on the recorder thread and prepends at most the requested buffered duration.
      *
@@ -272,7 +234,6 @@ internal class AudioEngine(
         if (uplinkEnabled.get() || pendingCaptureStart.get() != null) return true
         val frames = CapturePreRollPolicy.frameCount(
             requestedMs = preRollMs,
-            wakeCapturePending = wakeCapturePending.getAndSet(false),
         ).coerceAtMost(MAX_PRE_ROLL_FRAMES)
         val revision = captureRevision.incrementAndGet()
         pendingCaptureStart.set(CaptureStartRequest(revision, frames))
@@ -284,21 +245,13 @@ internal class AudioEngine(
         captureRevision.incrementAndGet()
         activeCaptureRevision.set(-1)
         pendingCaptureStart.set(null)
-        wakeCapturePending.set(false)
         uplinkEnabled.set(false)
     }
 
     /** Marks a server playback/prompt boundary without pausing the continuously running KWS. */
     fun setPromptPlayback(active: Boolean) {
         val previous = playbackOrPromptExpected.getAndSet(active)
-        if (
-            KeywordRoutingPolicy.shouldResetPromptStream(
-                previousPromptExpected = previous,
-                promptExpected = active,
-                kwsSessionEnabled = kwsSessionEnabled.get(),
-            )
-        ) {
-            pendingWakeWord.set(null)
+        if (previous && !active) {
             kwsQueue.clear()
             runCatching { keywordSpotter?.reset() }
                 .onFailure {
@@ -306,28 +259,6 @@ internal class AudioEngine(
                 }
         }
     }
-
-    /** Enables wake KWS for an active session; playback still enables CONTROL independently. */
-    fun setKwsSessionEnabled(enabled: Boolean) {
-        val previous = kwsSessionEnabled.getAndSet(enabled)
-        if (!enabled) {
-            pendingWakeWord.set(null)
-            kwsQueue.clear()
-            if (KeywordRoutingPolicy.shouldResetStream(previous, enabled)) {
-                runCatching { keywordSpotter?.reset() }
-                    .onFailure {
-                        callback.onDiagnostic("local_keyword_reset_failed", it.message.orEmpty(), it)
-                    }
-            }
-        }
-    }
-
-    fun setWakeArmed(armed: Boolean) {
-        wakeArmed.set(armed)
-        if (!armed) pendingWakeWord.set(null)
-    }
-
-    fun isUplinkEnabled(): Boolean = uplinkEnabled.get()
 
     fun enqueueOpus(packet: ByteArray) {
         if (!active.get() || !playbackAccepting.get()) return
@@ -711,9 +642,7 @@ internal class AudioEngine(
                             processedEnergy = 0.0
                         }
                     }
-                    if (kwsSessionEnabled.get() || playbackOrPromptExpected.get() ||
-                        playbackActive.get()
-                    ) {
+                    if (playbackOrPromptExpected.get() || playbackActive.get()) {
                         val kwsFrame = if (hasRecentRender) {
                             boostPcm16(captured, PLAYBACK_KWS_GAIN)
                         } else {
@@ -726,17 +655,6 @@ internal class AudioEngine(
                     }
                     preRoll.addLast(uplinkFrame)
                     while (preRoll.size > MAX_PRE_ROLL_FRAMES) preRoll.removeFirst()
-
-                    val detectedWord = pendingWakeWord.getAndSet(null)
-                    if (detectedWord != null) {
-                        // Wake only announces intent. The server separately authorizes capture.start
-                        // with an explicit pre-roll, so no audio can race ahead of that control.
-                        wakeCapturePending.set(true)
-                        if (!callback.onWakeWord(detectedWord)) {
-                            wakeCapturePending.compareAndSet(true, false)
-                        }
-                        continue
-                    }
 
                     val captureStart = pendingCaptureStart.getAndSet(null)
                     if (captureStart != null &&
@@ -802,7 +720,7 @@ internal class AudioEngine(
             val engine = LocalCommandSpotter()
             keywordSpotter = engine
             try {
-                engine.init(appContext.assets, enabledWakeWords)
+                engine.init(appContext.assets)
                 while (isActive(runGeneration)) {
                     val frame = kwsQueue.poll(100, TimeUnit.MILLISECONDS) ?: continue
                     engine.accept(frame)?.let { keyword ->
@@ -832,19 +750,8 @@ internal class AudioEngine(
 
     private fun handleKeyword(keyword: String) {
         when (
-            KeywordRoutingPolicy.dispatch(
-                route = LocalCommandSpotter.routeKeyword(keyword, enabledWakeWords),
-                playbackOrPromptExpected = playbackOrPromptExpected.get(),
-                playbackActive = playbackActive.get(),
-                wakeArmed = wakeArmed.get(),
-            )
+            KeywordRoutingPolicy.dispatch(LocalCommandSpotter.routeKeyword(keyword))
         ) {
-            KeywordRoutingPolicy.Dispatch.WAKE -> {
-                if (wakeArmed.compareAndSet(true, false)) {
-                    pendingWakeWord.compareAndSet(null, keyword)
-                }
-                return
-            }
             KeywordRoutingPolicy.Dispatch.IGNORE -> return
             KeywordRoutingPolicy.Dispatch.CONTROL -> Unit
         }
@@ -1130,7 +1037,6 @@ internal class AudioEngine(
                         }
                         started = true
                         playbackActive.set(true)
-                        callback.onPlaybackStarted()
                     }
                     var writeSucceeded = true
                     for (pcm in buffered) {

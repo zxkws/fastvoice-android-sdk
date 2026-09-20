@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.0 — 2026-09-20
+
+- 建立 SDK / FastVoice 服务端镜像统一兼容性版本基线；从本版本起，不兼容 wire / 公共 API 变更升级主版本，兼容新增升级次版本，兼容修复升级补丁版本。
+- `1.0.0` 不保留 0.x wire/API 兼容层；宿主必须与 1.0.0 服务端配套升级。`FastVoiceError.rev` 已删除，服务端 error 只接受当前字段集合。
+- `playWelcome()` 收敛为无参数动作；欢迎内容只由 `areaId` 对应区域决定，`WelcomeAck` 不再携带无业务作用的站点字段。
+- 删除服务端从不发送的 `FastVoiceState.IDLE`，SDK 只公开当前 wire 实际存在的五种状态。
+- 破坏性协议调整：删除 `hello.wake`、`ready.wake_words` 和客户端 `wake` 消息；连接 ready 后由服务端直接 `capture.start(pre_roll_ms=0)` 并进入 `listening`。
+- 删除公开 wake 配置/状态：`preferredWakeWords`、`activeWakeWords`、`SUPPORTED_WAKE_WORDS`；本地 Sherpa KWS 继续保留播放期“停止 / 继续 / 换一个”等控制候选。
+- 删除旧 `SLEEPING` 状态常量、`SleepCuePlayer` 与本地休眠提示音资源；当前 SDK 不再参与 30 秒休眠/唤醒生命周期。
+- `FastVoiceClient.start()/stop()` 继续管理长生命周期 WebSocket/AudioRecord/AEC，不映射物理按键，也不新增 PTT 公共 API。
+- `getLocation` 改为在收到服务端 `state=listening` 时刷新；首次连接、回答恢复以及真实用户 VAD 起声都可触发，不再依赖 wake。
+- 目标独立按压麦克风的松开行为、连续按压和长期空闲稳定性仍需在客户端集成阶段用目标硬件验证，但不再保留 wake/sleep 双状态机作为软件 fallback。
+
 ## 0.17.0 — 2026-09-15
 
 - `updateLocation()` / `updateCoordinates()` / `clearLocation()` 不再要求已 `start()`。
